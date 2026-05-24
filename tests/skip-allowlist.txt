@@ -1,0 +1,3 @@
+# Allowlisted skipped tests (one RESULT name per line).
+# A RESULT: SKIP whose name is NOT listed here fails ./run_tests.
+# Task 1 has no allowed skips.

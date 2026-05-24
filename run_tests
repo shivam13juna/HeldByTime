@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# run_tests — Task 1 harness.
+#
+# Enforces (see app.md §10 step 1, SECURITY_INVARIANTS.md I11):
+#   - negative-scope guard: no implementation code has started yet
+#   - placeholder scan: no TODO/FIXME/etc. in deliverables
+#   - constants consistency: spec/constants.json == Swift == Go == FORMAT.md
+#   - no silent skips: a SKIP not in tests/skip-allowlist.txt fails the run
+#
+# Exit 0 only if every check passes with no unallowed skips.
+
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+BUILD="$ROOT/build"
+mkdir -p "$BUILD"
+RESULTS="$BUILD/results.txt"
+: > "$RESULTS"
+
+emit() {  # emit STATUS NAME [DETAIL...]
+  local status="$1"; local name="$2"; shift 2 || true
+  local detail="$*"
+  if [ -n "$detail" ]; then
+    echo "RESULT: $status $name -- $detail" | tee -a "$RESULTS"
+  else
+    echo "RESULT: $status $name" | tee -a "$RESULTS"
+  fi
+}
+
+run_exec() {  # run_exec EXE NAME [args...] — run a test binary, collect its RESULT lines
+  local exe="$1"; local name="$2"; shift 2
+  local out="$BUILD/${name//\//_}.out"
+  "$exe" "$@" > "$out" 2>&1
+  local code=$?
+  grep '^RESULT:' "$out" | tee -a "$RESULTS"
+  if [ "$code" -ne 0 ] && ! grep -q '^RESULT: FAIL ' "$out"; then
+    emit FAIL "$name/exit" "exited $code with no FAIL result (see $out)"
+  fi
+}
+
+echo "== vault harness =="
+
+# ---- 1. Phase guard (Task-1 negative-scope retired at Task 2; forward guards kept) ----
+scope_ok=1
+# UI frameworks are not permitted until Task 9.
+if grep -rlE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' --include='*.swift' Sources Tools tests 2>/dev/null | grep -q .; then
+  emit FAIL scope/ui-import "SwiftUI/AppKit/Cocoa import found (forbidden before Task 9)"
+  scope_ok=0
+fi
+# No assembled .app bundle until Task 11.
+if find . -path ./.git -prune -o -name '*.app' -print 2>/dev/null | grep -q .; then
+  emit FAIL scope/app-bundle ".app bundle present (forbidden before Task 11)"
+  scope_ok=0
+fi
+[ "$scope_ok" = 1 ] && emit PASS scope/phase-guard
+
+# ---- 2. Placeholder scan (deliverables only; not app.md / suggestions.md / this script) ----
+PH='(TODO|FIXME|XXX|PLACEHOLDER|HACK)'
+if grep -rnE "$PH" FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests 2>/dev/null | grep -q .; then
+  emit FAIL placeholder/scan "placeholder token found in deliverables"
+  grep -rnE "$PH" FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests 2>/dev/null | sed 's/^/    /'
+else
+  emit PASS placeholder/scan
+fi
+
+# ---- 3. Build the Swift constant dumper ----
+if swiftc -O Sources/Constants/Constants.swift Tools/constdump-swift/main.swift -o "$BUILD/constdump-swift" 2> "$BUILD/swiftc.log"; then
+  if "$BUILD/constdump-swift" > "$BUILD/constants-swift.json" 2>> "$BUILD/swiftc.log"; then
+    emit PASS build/swift-dumper
+  else
+    emit FAIL build/swift-dumper "dumper run failed (see build/swiftc.log)"
+  fi
+else
+  emit FAIL build/swift-dumper "swiftc failed (see build/swiftc.log)"
+fi
+
+# ---- 4. Build the Go constant dumper ----
+if ( cd helper && go build -o "$BUILD/constdump-go" ./cmd/constdump ) 2> "$BUILD/gobuild.log"; then
+  if "$BUILD/constdump-go" > "$BUILD/constants-go.json" 2>> "$BUILD/gobuild.log"; then
+    emit PASS build/go-dumper
+  else
+    emit FAIL build/go-dumper "dumper run failed (see build/gobuild.log)"
+  fi
+else
+  emit FAIL build/go-dumper "go build failed (see build/gobuild.log)"
+fi
+
+# ---- 5. Constants consistency check ----
+if [ -f "$BUILD/constants-swift.json" ] && [ -f "$BUILD/constants-go.json" ]; then
+  if swiftc -O tests/consistency_check.swift -o "$BUILD/consistency_check" 2> "$BUILD/cc-build.log"; then
+    run_exec "$BUILD/consistency_check" consistency spec/constants.json "$BUILD/constants-swift.json" "$BUILD/constants-go.json" FORMAT.md
+  else
+    emit FAIL consistency/build "consistency_check failed to compile (see build/cc-build.log)"
+  fi
+else
+  emit FAIL consistency/inputs "dumper outputs missing; cannot run consistency check"
+fi
+
+# ---- 6. Build vendored Argon2id (portable ref build) into a static lib ----
+ACFLAGS="-O3 -Ivendor/argon2/include -Ivendor/argon2/src -ISources/CArgon2/include"
+ASRC="vendor/argon2/src/argon2.c vendor/argon2/src/core.c vendor/argon2/src/encoding.c \
+      vendor/argon2/src/ref.c vendor/argon2/src/thread.c vendor/argon2/src/blake2/blake2b.c \
+      Sources/CArgon2/shim.c"
+mkdir -p "$BUILD/aobj"
+: > "$BUILD/argon2-cc.log"
+argon2_ok=1
+for f in $ASRC; do
+  if ! clang $ACFLAGS -c "$f" -o "$BUILD/aobj/$(basename "${f%.c}").o" 2>> "$BUILD/argon2-cc.log"; then
+    argon2_ok=0
+  fi
+done
+if [ "$argon2_ok" = 1 ] && ar rcs "$BUILD/libargon2.a" "$BUILD"/aobj/*.o 2>> "$BUILD/argon2-cc.log"; then
+  emit PASS build/argon2-lib
+else
+  emit FAIL build/argon2-lib "Argon2 C build failed (see build/argon2-cc.log)"
+fi
+
+# ---- 7. Build + run the test binary (format + Argon2id + end-to-end) ----
+if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
+      Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+      tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift tests/main.swift \
+      -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
+      -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
+  run_exec "$BUILD/vault_tests" tests
+else
+  emit FAIL tests/build "test binary failed to compile (see build/test-build.log)"
+fi
+
+# ---- Aggregate ----
+echo
+echo "== Summary =="
+fail_count=$(grep -c '^RESULT: FAIL ' "$RESULTS" || true)
+pass_count=$(grep -c '^RESULT: PASS ' "$RESULTS" || true)
+ALLOW="tests/skip-allowlist.txt"
+skip_unallowed=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  name=$(echo "$line" | awk '{print $3}')
+  if ! grep -qxF "$name" "$ALLOW" 2>/dev/null; then
+    echo "  unallowed SKIP: $name"
+    skip_unallowed=$((skip_unallowed + 1))
+  fi
+done < <(grep '^RESULT: SKIP ' "$RESULTS" 2>/dev/null || true)
+
+echo "  PASS=$pass_count  FAIL=$fail_count  SKIP-unallowed=$skip_unallowed"
+if [ "$fail_count" -eq 0 ] && [ "$skip_unallowed" -eq 0 ]; then
+  echo "OK: harness green."
+  exit 0
+else
+  echo "FAILED: harness is red."
+  exit 1
+fi

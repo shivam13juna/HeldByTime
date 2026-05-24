@@ -1,0 +1,4 @@
+module CArgon2 {
+    header "vault_argon2.h"
+    export *
+}

@@ -1,0 +1,10 @@
+// main.swift — test entry point. Top-level code is permitted here (main.swift)
+// even in a multi-file build. Unbuffered stdout keeps RESULT lines on a trap.
+
+import Foundation
+
+setvbuf(stdout, nil, _IONBF, 0)
+runFormatSuite()
+runArgon2Suite()
+print("tests-done failures=\(failures)")
+exit(failures == 0 ? 0 : 1)
