@@ -54,11 +54,12 @@ if find . -path ./.git -prune -o -name '*.app' -print 2>/dev/null | grep -q .; t
 fi
 [ "$scope_ok" = 1 ] && emit PASS scope/phase-guard
 
-# ---- 2. Placeholder scan (deliverables only; not app.md / suggestions.md / this script) ----
+# ---- 2. Placeholder scan (our deliverables only; vendored third-party code excluded) ----
 PH='(TODO|FIXME|XXX|PLACEHOLDER|HACK)'
-if grep -rnE "$PH" FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests 2>/dev/null | grep -q .; then
+PH_SCAN=(grep -rnE "$PH" --exclude-dir=vendor FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests)
+if "${PH_SCAN[@]}" 2>/dev/null | grep -q .; then
   emit FAIL placeholder/scan "placeholder token found in deliverables"
-  grep -rnE "$PH" FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests 2>/dev/null | sed 's/^/    /'
+  "${PH_SCAN[@]}" 2>/dev/null | sed 's/^/    /'
 else
   emit PASS placeholder/scan
 fi
@@ -96,6 +97,58 @@ else
   emit FAIL consistency/inputs "dumper outputs missing; cannot run consistency check"
 fi
 
+# ---- 5b. Helper (Task 3): vendor integrity + build ----
+# The vaultseal helper vendors its drand/tlock dependency tree (pinned, committed).
+# Two enforcement points (SECURITY_INVARIANTS I9; Task 3 vendor discipline):
+#   - `go mod verify` checks the module hashes match go.sum.
+#   - `go build -mod=vendor` fails with "inconsistent vendoring" if vendor/ is
+#     missing or out of sync with go.mod -- this IS the dirty-vendor guard.
+helper_ok=1
+if [ ! -d helper/vendor ] || [ ! -f helper/vendor/modules.txt ]; then
+  emit FAIL helper/vendor-present "helper/vendor missing (run: cd helper && go mod vendor)"
+  helper_ok=0
+fi
+if [ "$helper_ok" = 1 ]; then
+  if ( cd helper && go mod verify ) > "$BUILD/helper-verify.log" 2>&1; then
+    emit PASS helper/mod-verify
+  else
+    emit FAIL helper/mod-verify "go mod verify failed (see build/helper-verify.log)"
+    helper_ok=0
+  fi
+fi
+if [ "$helper_ok" = 1 ]; then
+  if ( cd helper \
+        && go build -mod=vendor -o "$BUILD/vaultseal" ./cmd/vaultseal \
+        && go build -mod=vendor -o "$BUILD/hermetictests" ./cmd/hermetictests \
+     ) > "$BUILD/helper-build.log" 2>&1; then
+    emit PASS helper/build
+  else
+    emit FAIL helper/build "vaultseal/hermetictests build failed (see build/helper-build.log)"
+    helper_ok=0
+  fi
+fi
+
+# ---- 5c. Helper hermetic tests (offline: network is black-holed to prove it) ----
+# Real-beacon round-trip, fail-closed behaviours, and negative-CLI coverage. The
+# proxy env points at a dead address so any accidental network dependence fails
+# loudly instead of silently passing against the live drand network.
+if [ "$helper_ok" = 1 ] && [ -x "$BUILD/hermetictests" ]; then
+  HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 ALL_PROXY=socks5://127.0.0.1:1 \
+    run_exec "$BUILD/hermetictests" helper-tests "$BUILD/vaultseal"
+else
+  emit FAIL helper/tests "skipped because the helper build did not succeed"
+fi
+
+# ---- 5d. Helper unit tests (real Network HTTP layer via in-process httptest) ----
+if [ "$helper_ok" = 1 ]; then
+  if ( cd helper && go test -mod=vendor ./internal/... ) > "$BUILD/helper-gotest.log" 2>&1; then
+    emit PASS helper/go-test
+  else
+    emit FAIL helper/go-test "go test failed (see build/helper-gotest.log)"
+    sed 's/^/    /' "$BUILD/helper-gotest.log"
+  fi
+fi
+
 # ---- 6. Build vendored Argon2id (portable ref build) into a static lib ----
 ACFLAGS="-O3 -Ivendor/argon2/include -Ivendor/argon2/src -ISources/CArgon2/include"
 ASRC="vendor/argon2/src/argon2.c vendor/argon2/src/core.c vendor/argon2/src/encoding.c \
@@ -118,13 +171,46 @@ fi
 # ---- 7. Build + run the test binary (format + Argon2id + end-to-end) ----
 if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
       Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
-      tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift tests/main.swift \
+      tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift \
+      tests/helper_suite.swift tests/main.swift \
       -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
       -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
   run_exec "$BUILD/vault_tests" tests
 else
   emit FAIL tests/build "test binary failed to compile (see build/test-build.log)"
 fi
+
+# ---- 7b. DEBUG dry-run surface must not leak into a release build (Task 4) ----
+# The developer dry-run wrappers (DryRun.swift) are wrapped in #if DEBUG and must
+# be ABSENT from release. We compile VaultCore both ways (no linking needed) and
+# search the object for the unique sentinel string the wrappers embed:
+#   - release build (no -D DEBUG): marker MUST be absent (the shipped surface).
+#   - debug build   (-D DEBUG):    marker MUST be present (proves the test bites).
+DRYRUN_MARKER='VAULT_DRYRUN_SURFACE_V1'
+DRYRUN_SRC=(Sources/Constants/Constants.swift Sources/VaultCore/*.swift)
+DRYRUN_INC=(-I Sources/CArgon2/include -Xcc -Ivendor/argon2/include)
+dryrun_ok=1
+if swiftc -O -wmo -emit-object "${DRYRUN_SRC[@]}" "${DRYRUN_INC[@]}" \
+      -o "$BUILD/vaultcore-release.o" 2> "$BUILD/dryrun-release.log"; then
+  if strings "$BUILD/vaultcore-release.o" | grep -q "$DRYRUN_MARKER"; then
+    emit FAIL dryrun/release-leak "dry-run marker present in release build"
+    dryrun_ok=0
+  fi
+else
+  emit FAIL dryrun/release-build "release VaultCore failed to compile (see build/dryrun-release.log)"
+  dryrun_ok=0
+fi
+if swiftc -wmo -emit-object -D DEBUG "${DRYRUN_SRC[@]}" "${DRYRUN_INC[@]}" \
+      -o "$BUILD/vaultcore-debug.o" 2> "$BUILD/dryrun-debug.log"; then
+  if ! strings "$BUILD/vaultcore-debug.o" | grep -q "$DRYRUN_MARKER"; then
+    emit FAIL dryrun/debug-missing "dry-run marker absent in DEBUG build (gate is vacuous)"
+    dryrun_ok=0
+  fi
+else
+  emit FAIL dryrun/debug-build "debug VaultCore failed to compile (see build/dryrun-debug.log)"
+  dryrun_ok=0
+fi
+[ "$dryrun_ok" = 1 ] && emit PASS dryrun/release-gate
 
 # ---- Aggregate ----
 echo

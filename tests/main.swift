@@ -6,5 +6,6 @@ import Foundation
 setvbuf(stdout, nil, _IONBF, 0)
 runFormatSuite()
 runArgon2Suite()
+runHelperSuite()
 print("tests-done failures=\(failures)")
 exit(failures == 0 ? 0 : 1)

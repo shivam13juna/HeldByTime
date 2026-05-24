@@ -1,8 +1,9 @@
-# done_so_far.md — implementation handoff (Tasks 1–2)
+# done_so_far.md — implementation handoff (Tasks 1–3)
 
 This document plus `app.md` (the full design), `FORMAT.md` (the byte spec),
 `SECURITY_INVARIANTS.md` (the non-negotiables) and the codebase should be enough to
-pick up at **Task 3 (Go `vaultseal` helper)** and continue.
+pick up at **Task 4 (Swift seal/unseal wrapper + trusted time — the ⏸ milestone)** and
+continue.
 
 - **Read order for a new developer:** `app.md` §1–§11 → `SECURITY_INVARIANTS.md` →
   `FORMAT.md` → this file → the source.
@@ -18,20 +19,29 @@ pick up at **Task 3 (Go `vaultseal` helper)** and continue.
 ./run_tests        # the one command. Exit 0 = green. Bash (has a #!/usr/bin/env bash shebang).
 ```
 
-What it does, in order (each step prints `RESULT: PASS|FAIL <name>` lines):
+What it does, in order (each step prints `RESULT: PASS|FAIL <name>` lines). Step
+numbers match the `# ----` comments in `run_tests`:
 
 1. **Phase guard** — fails if a SwiftUI/AppKit/Cocoa import appears (forbidden before
    Task 9) or a `.app` bundle exists (forbidden before Task 11). *(The stricter Task-1
    negative-scope guard — "no crypto/parser code yet" — was retired when Task 2 opened,
    as planned.)*
 2. **Placeholder scan** — fails on `TODO|FIXME|XXX|PLACEHOLDER|HACK` in deliverables
-   (scans `FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests`; not
-   `app.md`/`run_tests`).
+   (scans `FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests`,
+   **excluding `vendor/`**; not `app.md`/`run_tests`).
 3. **Swift constant dumper** build+run → `build/constants-swift.json`.
 4. **Go constant dumper** build+run → `build/constants-go.json`.
 5. **Constants consistency** (`tests/consistency_check.swift`) — parses
    `spec/constants.json`, both dumps, and the `FORMAT.md` constants table; fails on any
    missing/extra key, type/value mismatch, or malformed table.
+5b. **Helper vendor integrity + build** (Task 3) — `go mod verify`, then
+   `go build -mod=vendor` of `cmd/vaultseal` and `cmd/hermetictests`. The `-mod=vendor`
+   build fails on "inconsistent vendoring" — that is the dirty/missing-vendor guard.
+5c. **Helper hermetic tests** — runs `build/hermetictests` with the network black-holed
+   to a dead proxy (proves it needs no network): real-beacon round-trip, fail-closed
+   behaviours, and 13 negative-CLI cases.
+5d. **Helper unit tests** — `go test -mod=vendor ./internal/...` (the `httptest` coverage
+   of the real `drandnet` HTTP layer, incl. the `chain_mismatch` defense).
 6. **Argon2id static lib** — `clang` builds the vendored portable `ref` build +
    `Sources/CArgon2/shim.c` into `build/libargon2.a`.
 7. **Test binary** — `swiftc` compiles `Sources/Constants` + `Sources/VaultCore/*` +
@@ -42,7 +52,13 @@ What it does, in order (each step prints `RESULT: PASS|FAIL <name>` lines):
 lines (`tests/skip-allowlist.txt`). `RESULT: INFO` lines are informational (e.g. the
 Argon2 benchmark timing) and not counted.
 
-### Test-harness conventions (reuse these for Task 3+)
+**Toolchain prerequisites:** Swift/clang (Command Line Tools), **Go 1.26+**. The whole
+harness is **offline**: the Go deps build from the committed `helper/vendor/` via
+`-mod=vendor` (no module download, even on a clean machine), and the helper tests are
+hermetic by construction. Network is only needed if you *change* Go deps (re-run
+`cd helper && go mod tidy && go mod vendor`).
+
+### Test-harness conventions (reuse these for new suites)
 - Test binaries print `RESULT: PASS|FAIL|SKIP|INFO <name> [-- detail]` to stdout and
   exit non-zero on any failure.
 - `run_exec EXE NAME [args...]` (a bash function in `run_tests`) runs a binary, collects
@@ -50,13 +66,15 @@ Argon2 benchmark timing) and not counted.
   non-zero **without** a `FAIL` line (catches crashes/traps that would otherwise be
   silent because buffered stdout is lost on a trap; `tests/main.swift` also sets
   `setvbuf(stdout, nil, _IONBF, 0)` so partial output survives a trap).
-- Add a Go test step for Task 3 the same way: build it, `run_exec` it (or for `go test`,
-  translate its output to `RESULT:` lines, or just gate on its exit code via a wrapper
-  that emits one `RESULT:` line).
+- Two patterns are now in use, both fine to copy:
+  - **RESULT-line binary** (Swift `vault_tests`, Go `cmd/hermetictests`): prints its own
+    `RESULT:` lines; the harness `run_exec`s it.
+  - **Plain `go test`** (`internal/drandnet`): the harness runs `go test` and emits a
+    single `RESULT: PASS|FAIL helper/go-test` from its exit code, dumping the log on fail.
 
 ---
 
-## Repository layout (after Task 2)
+## Repository layout (after Task 3)
 
 ```
 app.md                      full design (authoritative intent)
@@ -83,9 +101,16 @@ Sources/
     KeyDerivation.swift          deriveKey(password,salt) at frozen 1 GiB params
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
-helper/                          ★ Go module "vaultseal" — Task 3 lives here
-  go.mod                         module vaultseal (go 1.26); NO deps yet
+helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
+  go.mod / go.sum                pinned deps (tlock/drand/kyber/age); see Task 3
+  vendor/                        committed, pinned dependency tree (15 modules); -mod=vendor
   internal/constants/constants.go  Go mirror of constants + check-only All map
+  internal/wire/errors.go        closed helper error domain + JSON-on-stderr encoder
+  internal/drandnet/network.go   self-implemented tlock.Network over stdlib net/http
+  internal/drandnet/network_test.go  httptest coverage of the real HTTP layer
+  internal/seal/seal.go          seal / unseal / current-round logic
+  cmd/vaultseal/main.go          the helper binary (strict CLI; stdin->stdout)
+  cmd/hermetictests/main.go      offline RESULT-line test harness (fake net + real-beacon KAT)
   cmd/constdump/main.go          emits Go constants as JSON
 vendor/argon2/                   pinned phc-winner-argon2 (ref build) + PINNED.txt + LICENSE
 tests/
@@ -98,7 +123,7 @@ tests/
 build/                           generated; gitignored
 ```
 
-★ = the things Task 3+ will touch or depend on.
+★ = the load-bearing pieces later tasks touch or depend on.
 
 ---
 
@@ -186,9 +211,10 @@ the dev machine; emitted as `RESULT: INFO`), empty-password rejection, and an
 **end-to-end** password→Argon2id key→PW01 seal/open with wrong-password → `authError`.
 
 Proven non-ceremonial: injecting a wrong expected Argon2 vector was caught, then
-restored to green. Current state: **45 checks, all PASS**.
+restored to green. (At Task 2's completion the harness ran 45 checks; the current total
+including Task 3 is in the **Current status** section at the end.)
 
-### Build details Task 3 may need to mirror
+### Build details (Swift / Argon2 toolchain) for later tasks
 - Swift: `swiftc -O <Constants + VaultCore + test files> -I Sources/CArgon2/include
   -Xcc -Ivendor/argon2/include -L build -largon2 -o build/vault_tests`. CLT-only, no
   SwiftPM/Package.swift.
@@ -199,50 +225,147 @@ restored to green. Current state: **45 checks, all PASS**.
 
 ---
 
-## Notes / decisions a Task 3 developer must respect
+## Task 3 — Go `vaultseal` helper (DONE)
+
+Goal: the **only** component that talks to the drand network. It time-locks/-unlocks the
+opaque `manifest || PW01` payload and reports the current round, behind a deliberately
+tiny, fail-closed CLI. A Swift wrapper (Task 4) will drive it as a subprocess.
+
+### Dependency decision (read before touching `helper/go.mod`)
+- Uses the **audited `github.com/drand/tlock` v1.2.0** IBE crypto + `kyber` BLS. We do
+  **not** roll our own time-lock/IBE/hash-to-curve (Kerckhoffs).
+- **We implement the `tlock.Network` interface ourselves** (`internal/drandnet`) over
+  stdlib `net/http`. That prunes the entire heavy drand *client* stack (Prometheus, zap,
+  `drand/go-clients`, the gRPC client). It also gives us the control the contract
+  demands: compiled-in endpoints, our own closed error domain, explicit chain
+  verification, max-round-across-endpoints — none of which tlock's stock HTTP network
+  offers.
+- **Unavoidable:** core `tlock` imports `drand/v2/common` (the `chain.Beacon` type),
+  which transitively links `protobuf`/`grpc` **type stubs**. The helper never opens a
+  gRPC socket (HTTP GET via stdlib only) — it is dead-linked code. Shedding it would
+  mean hand-rolling the IBE construction, which we refuse to do.
+- **Pins:** `tlock v1.2.0`, `drand/v2 v2.0.2`, `kyber v1.3.1`, `kyber-bls12381 v0.3.1`,
+  `age v1.1.1` — tlock's own tested set, **not** `go mod tidy`'s floated-latest. Vendored
+  and committed (15 modules, ~19M). `go mod verify` is clean.
+- **Quicknet scheme** = `crypto.SchemeFromName("bls-unchained-g1-rfc9380")`; sigs are 48-byte
+  G1, the group public key is 96-byte G2.
+
+### What it does
+- **`internal/wire`** — the closed helper error domain (exactly 7 codes:
+  `round_not_ready`, `round_too_near`, `stale_round`, `auth_failed`, `parse_error`,
+  `chain_mismatch`, `timeout`) and a JSON-on-stderr encoder bounded under
+  `MAX_STDERR_BYTES`. An `Error` can never carry a code outside the closed set
+  (`Emit` collapses any stray code to `parse_error`).
+- **`internal/drandnet.Network`** — implements `tlock.Network`. Chain hash, group pubkey,
+  scheme, genesis, period and the endpoint list are **compiled in** from
+  `internal/constants` — never from a file/env/flag (no forged-chain escape hatch,
+  I9). Every consulted endpoint's `/info` is verified against those values; a 200 `/info`
+  advertising a **different** chain is **fatal** `chain_mismatch` (even if another mirror
+  is healthy). Fetched signatures are **BLS-verified** against the compiled-in pubkey
+  before use (defense in depth — tlock's `TimeUnlock` also verifies). `SwitchChainHash`
+  is disabled and decryption runs `.Strict()` so a chainhash embedded in a ciphertext is
+  never trusted. `VerifiedLatest()` returns the **max** verified latest across endpoints.
+  HTTP **425/404 ⇒ `round_not_ready`**; bodies are size-capped (64 KiB).
+- **`internal/seal`** — `Seal` (verifies freshness: rejects `round <= latest +
+  FRESHNESS_MARGIN_ROUNDS` as `round_too_near`), `Unseal` (maps a tlock decrypt failure
+  to the closed domain; the Network preserves the real `Signature()` cause that tlock
+  flattens into `ErrTooEarly`), and `CurrentRound` (rejects a network latest that is
+  `< expected(now) - STALE_ROUND_TOLERANCE_ROUNDS` as `stale_round`; the clock only ever
+  *rejects*, never grants). All three **buffer the full result and write stdout only on
+  success** — never a partial result beside an error.
+- **`cmd/vaultseal`** — strict CLI: exactly `seal --round N` | `unseal` | `current-round`
+  and nothing else. Any extra token, unknown flag, `--round=N` form, non-digit/zero/
+  negative round ⇒ `parse_error` *before* any network or crypto work. There are **no**
+  file/network/chain override flags; input is stdin only, result is stdout only.
+
+### Tests (all wired into `./run_tests`, offline)
+- **`cmd/hermetictests`** (RESULT-line harness, run with the network black-holed to a
+  dead proxy to *prove* it needs no network): real-beacon **round-trip** (seal→unseal of
+  a payload using a real quicknet beacon for round 1000000, exercising genuine tlock
+  crypto + BLS verify); future-round-locked (`round_not_ready`); **forged beacon**
+  rejected (`auth_failed`); corrupt ciphertext fail-closed; freshness boundary
+  (`<=latest+margin` rejected, `+1` accepted, past rejected); `stale_round`;
+  `current-round` happy + `timeout` propagation; **13 negative-CLI cases** (each: non-zero
+  exit, empty stdout, closed-domain JSON on stderr).
+- **`internal/drandnet/network_test.go`** (`go test` + in-process `httptest`): the real
+  HTTP layer — `VerifiedLatest` happy + max-across-endpoints; **`chain_mismatch` fatal**
+  for wrong hash/pubkey/scheme/period/genesis (even with a healthy second endpoint);
+  HTTP-layer signature verify (real sig passes, valid-but-wrong sig ⇒ `auth_failed`);
+  425/404 ⇒ `round_not_ready`; response size cap; `ExpectedRound` math.
+- **Vendor enforcement:** `run_tests` runs `go mod verify` and builds with `-mod=vendor`
+  (which fails on "inconsistent vendoring" — that *is* the dirty/missing-vendor guard).
+- **Placeholder scan** now excludes `vendor/` (third-party code legitimately contains
+  TODO/FIXME).
+
+**Also proven live (not in the offline harness):** a real seal→wait-for-round→unseal
+across an actual drand round boundary recovered the exact plaintext — the genuine
+HTTP-fetch + verify + decrypt path end to end.
+
+### Decisions a Task 4 developer should know
+- **Sealed payload format** is binary (non-armored) age. Opaque to VLT1; Task 6 frames it.
+- **Timeout semantics:** the helper's per-request HTTP timeout is `HELPER_TIMEOUT_MS`;
+  with 3 endpoints the worst case is a multiple of that. The **authoritative**
+  fail-closed kill is the Swift wrapper's job (Task 4) — it owns the overall budget and
+  must terminate the subprocess. Treat the helper's internal timeout as best-effort.
+- **Endpoints** (`api.drand.sh`, `api2`, `api3`) live only in the Go helper (Swift talks
+  to the helper, not drand), so they are intentionally **not** in the cross-checked
+  `constants.json`. They must be Canopy-whitelisted (Task 8 self-test verifies).
+- The helper does **one** operation per process and exits; `lastSigErr` state is per-process.
+
+Current state: **73 checks, all PASS.**
+
+---
+
+## Helper contract — what Task 4 (and 6) depend on
+
+These were the Task 3 requirements; the helper now implements all of them. They are
+listed here as the **boundary contract** the Swift wrapper must honour exactly.
 
 1. **Helper contract (app.md §9, SECURITY_INVARIANTS I9):** `vaultseal` exposes only
    `seal --round N` / `unseal` / `current-round`; **stdin→stdout only**; **no
    file-path/network/chain override flags**; chain hash + group pubkey + endpoints
-   **compiled-in** (use `helper/internal/constants` values; cross-checked to
-   `spec/constants.json` by the consistency test). Errors are the closed **helper
-   domain** JSON on stderr: `round_not_ready`, `round_too_near`, `stale_round`,
-   `auth_failed`, `parse_error`, `chain_mismatch`, `timeout`. Swift will switch only on
-   that closed set; unknown ⇒ fail closed; any stdout alongside an error ⇒ fail closed.
+   **compiled-in** (`helper/internal/constants`; the values are cross-checked to
+   `spec/constants.json` by the consistency test — endpoints are helper-only and are
+   *not* in that JSON). Errors are the closed **helper domain** JSON on stderr:
+   `round_not_ready`, `round_too_near`, `stale_round`, `auth_failed`, `parse_error`,
+   `chain_mismatch`, `timeout`. **Task 4 must switch only on that closed set;** unknown
+   code ⇒ fail closed; any stdout alongside a non-zero exit ⇒ fail closed.
 2. **The sealed payload piped through the helper is exactly `manifest || PW01`** — see
    `FORMAT.md` §3/§4/§5. VLT1 framing (Task 6) wraps the helper's output; the helper
    itself never sees VLT1.
-3. **Trusted time / stale-round** (`FORMAT.md` §8): reject `seal --round N` if
-   `N <= verifiedLatest + FRESHNESS_MARGIN_ROUNDS`; reject `current-round` as
-   `stale_round` if `verifiedLatest < expectedRound(now) - STALE_ROUND_TOLERANCE_ROUNDS`.
-   Use the **drand client's own `RoundAt`** as the authority and reconcile the documented
-   formula's off-by-one against it (the tolerance absorbs it). Use the **max verified
-   round across endpoints**, not the first reply.
-4. **Vendoring discipline for Go:** pin deps, commit `vendor/`, build with
-   `-mod=vendor`, and make the build fail if `vendor/` is missing/dirty or
-   `go mod verify` fails (enforced, not advisory). drand quicknet uses scheme
-   `bls-unchained-g1-rfc9380` (G1) — pick a tlock/drand library that supports it.
-5. **Constants are frozen.** If Task 3 needs a new constant, add it to
-   `spec/constants.json` **and** `Constants.swift` **and** `helper/internal/constants`
+3. **Trusted time / stale-round** (`FORMAT.md` §8): the helper rejects `seal --round N`
+   if `N <= verifiedLatest + FRESHNESS_MARGIN_ROUNDS` (`round_too_near`) and rejects
+   `current-round` as `stale_round` if `verifiedLatest < expectedRound(now) -
+   STALE_ROUND_TOLERANCE_ROUNDS`, using the **max verified round across endpoints**.
+   *As built:* because we pruned the drand client, the round/time map is the documented
+   `ExpectedRound` formula implemented directly (`internal/drandnet`), not the library's
+   `RoundAt`; the stale tolerance absorbs any off-by-one (the live network runs ~1 round
+   ahead of the formula, which is within tolerance).
+4. **Vendoring discipline for Go (done):** deps pinned, `vendor/` committed, built with
+   `-mod=vendor`; the build fails if `vendor/` is missing/dirty or `go mod verify` fails.
+   Scheme `bls-unchained-g1-rfc9380` (G1) is supported via `github.com/drand/tlock`.
+5. **Constants are frozen.** If a later task needs a new *cross-language* constant, add it
+   to `spec/constants.json` **and** `Constants.swift` **and** `helper/internal/constants`
    **and** the `FORMAT.md` table in the same change, or the consistency test fails.
+   (Helper-only values like the endpoint list stay in the Go helper.)
 6. **Canopy/network:** the helper's endpoints must be Canopy-whitelisted or the vault
    deadlocks; `api.drand.sh` is the primary. Self-test (Task 8) will verify reachability.
 
 ---
 
-## Remaining tasks (3–12) — the road ahead
+## Remaining tasks (4–12) — the road ahead
 
-This is the planned scope for the tasks not yet started. The entries below are a
-**map**, not a spec: objective + key deliverables + **hard gates** (enough to know what
-each task is and when it's done). They are intentionally *not* self-contained — the
-authoritative detail lives in `app.md`, and duplicating it here would create a second
-source of truth that drifts. **Before implementing a task, read its `app.md` sections.**
+This is the planned scope for the tasks not yet started (Tasks 1–3 are done; see their
+sections above). The entries below are a **map**, not a spec: objective + key
+deliverables + **hard gates** (enough to know what each task is and when it's done). They
+are intentionally *not* self-contained — the authoritative detail lives in `app.md`, and
+duplicating it here would create a second source of truth that drifts. **Before
+implementing a task, read its `app.md` sections.**
 
 ### Where the full detail lives (task → `app.md`)
 
 | Task | Full detail in `app.md` | Don't-miss specifics |
 |------|-------------------------|----------------------|
-| 3 Helper            | §9 (helper contract), §10 step 5, §11 | closed helper error domain; stdin→stdout; pinned-compiled-in values |
 | 4 Swift wrapper     | §9 (subprocess hardening), §10 step 6, §11 ¶1 | launch-time hash check; total error mapping; `DEBUG`-only dry-run |
 | 5 Schedule          | §5, §10 step 7 | too-near-skips-forward; DST / midnight-crossing |
 | 6 Vault store ⚠     | §6 (lifecycle/flow + state machine), §10 steps 8–9, **§11 "recovery decision matrix" (~line 742)**, §11 ¶4–6, §7a | the primary×`.bak` matrix MUST be enum-total; no-raw-quarantine; backup write order |
@@ -262,35 +385,42 @@ source of truth that drifts. **Before implementing a task, read its `app.md` sec
 Phases A→C must stay in order; the milestone after Task 4 is a hard stop before any
 store/UI code.
 
-### PHASE A (crypto + format + helper) — finish what 1–2 started
+### PHASE A (crypto + format + helper) — Tasks 1–4 done ✅ (MILESTONE reached)
 
-**Task 3 — Go `vaultseal` helper.** *(see "Notes a Task 3 developer must respect" above)*
-- Objective: the only component that talks to the drand network. tlock seal/unseal of
-  the `manifest || PW01` payload, plus `current-round`.
-- Deliverables: pinned + vendored drand/tlock client (`-mod=vendor`, `go mod verify`,
-  build fails if dirty); chain hash + group pubkey + endpoints **compiled-in** from
-  `helper/internal/constants`; commands `seal --round N` / `unseal` / `current-round`
-  only; **stdin→stdout only**, no file/network/chain flags; closed-set JSON error codes
-  on stderr.
-- Hard gates: negative-CLI tests (every forbidden flag/arg → non-zero exit, JSON error,
-  no stdout, no file touched); helper-side round rejection (`seal --round <past|latest|
-  latest+1-below-margin>` all fail); **stale-round** rejection; a future-sealed blob
-  stays cryptographically locked from a terminal; vendor-enforcement test.
-
-**Task 4 — Swift seal/unseal wrapper + trusted time. ⏸ MILESTONE.**
-- Objective: the Swift side of the helper boundary; the last thing before store/UI.
-- Deliverables: subprocess invocation by **absolute bundled path, never a shell**,
-  minimal env, capped IO, timeout = fail-closed, exec-bit + **launch-time hash check**
-  (expected hash compiled in, not a writable sidecar); total error mapping (known code →
-  specific fail-closed action; unknown / malformed stderr / non-zero-without-JSON /
-  stdout-alongside-error → fail closed); refuse non-future targets on the Swift side too;
-  the shared **`SelfTestEngine`** skeleton (ships in release; dev dry-run wrappers
-  `DEBUG`-only).
-- Hard gates: round→target mapping refuses `<= latest+margin`; closed-error-code switch
-  with unknown ⇒ fail closed; subprocess hardening tests; **release build fails if any
-  `DEBUG` dry-run symbol/flag is present.**
-- **After Task 4: `./run_tests` green across 1–4. No vault store, no UI, no real
-  secrets until here (SECURITY_INVARIANTS I-discipline).**
+**Task 4 — Swift seal/unseal wrapper + trusted time. ✅ MILESTONE.** `./run_tests`
+green across 1–4 (126 PASS / 0 FAIL). The Swift side of the helper boundary, in
+`Sources/VaultCore/`:
+- `HelperRunner.swift` — hardened invocation: absolute path via `Process.executableURL`
+  (never `/bin/sh`), **empty environment** (`[:]`; nothing inherited), stdin refused
+  above its cap before launch, stdout/stderr read under caps with over-cap ⇒ fail-closed,
+  timeout ⇒ `terminate → SIGKILL → .timeout`, and a launch-time integrity check
+  (`lstat` regular-file + reject symlink, owner-exec bit, `O_NOFOLLOW` read, SHA-256 vs
+  an **injected** expected hash). The expected hash is a constructor parameter, NOT a
+  file/sidecar; the app layer supplies the **compiled-in** value at bundling time
+  (Task 11). An empty/short expected hash is itself fail-closed.
+- `HelperWire.swift` — the closed Swift mirror of the 7 helper codes plus a single
+  `.failClosed(String)` sink, and the TOTAL `map(timedOut, exit, stdout, stderr)` →
+  `Result` (known code → its case; parse_error forwards detail; unknown code /
+  non-JSON stderr / non-zero-without-JSON / stdout-alongside-error / stderr-on-success /
+  either stream over cap → fail closed). No `default`, no silent success.
+- `TrustedTime.swift` — `expectedRound(at:)`, the Swift-side `validateSealTarget`
+  (refuses `target <= latest + FRESHNESS_MARGIN_ROUNDS`, overflow-safe), and one-sided
+  `isStale`. Freshness is enforced on BOTH sides; neither alone is load-bearing.
+- `VaultSealClient.swift` — typed `currentRound` / `seal(…verifiedLatest:)` /
+  `seal(…)` / `unseal`; `seal` refuses a too-near target BEFORE spawning. Payload stays
+  opaque (no decrypt/parse), which keeps Task 6's defensive re-seal passwordless.
+- `SelfTestEngine.swift` — **ships in release** (not `#if DEBUG`); reachable only via the
+  engine API (no CLI/flag/env). Skeleton steps: `argon2Vector` (real OpenSSL-cross-checked
+  KAT), `helperBinaryValid` (real preflight), `helperResponds` (live current-round). The
+  full first-run gate (separate-temp-dir isolation, ≥2-endpoint reachability policy,
+  data-loss confirmation) is Task 8 on top of this.
+- `DryRun.swift` — developer wrappers, **entirely `#if DEBUG`**, embedding the sentinel
+  `VAULT_DRYRUN_SURFACE_V1`.
+- Hard gates in `run_tests`: subprocess hardening suite (`tests/helper_suite.swift`, real
+  fixture executables) + a **dry-run release gate** (step 7b: compiles VaultCore release vs
+  `-D DEBUG` with `-wmo -emit-object`, asserts the marker is ABSENT from release and
+  PRESENT in debug — so the gate is provably non-vacuous).
+- **No vault store, no UI, no real secrets yet** (SECURITY_INVARIANTS I-discipline).
 
 ### PHASE B (schedule, store, lifecycle)
 
@@ -362,7 +492,11 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1, 2: **complete, `./run_tests` green (45 checks).**
+- Tasks 1, 2, 3: **complete, `./run_tests` green (73 checks).**
 - No vault-store, no UI, no `.app`, no real secrets yet (by design).
-- Next: **Task 3 — Go `vaultseal` helper.** Then Task 4 (Swift wrapper + trusted time)
-  reaches the milestone after which the store/UI work may begin.
+- Next: **Task 4 — Swift seal/unseal wrapper + trusted time. ⏸ MILESTONE.** It drives
+  the `vaultseal` helper as a hardened subprocess (absolute bundled path, never a shell;
+  minimal env; capped IO; timeout = fail-closed; exec-bit + launch-time hash check) and
+  maps the closed helper error domain totally (unknown code / malformed stderr /
+  non-zero-without-JSON / stdout-beside-error ⇒ fail closed). After Task 4, `./run_tests`
+  must be green across Tasks 1–4 before any store/UI/real-secret work begins.
