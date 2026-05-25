@@ -172,7 +172,7 @@ fi
 if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
       Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
       tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift \
-      tests/helper_suite.swift tests/main.swift \
+      tests/helper_suite.swift tests/schedule_suite.swift tests/main.swift \
       -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
       -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
   run_exec "$BUILD/vault_tests" tests
