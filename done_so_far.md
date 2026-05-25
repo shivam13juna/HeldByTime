@@ -99,6 +99,10 @@ Sources/
     VLT1.swift                   outer container framing (untrusted display header)
     Argon2.swift                 Argon2.raw(...) binding (any nonzero rc => throw)
     KeyDerivation.swift          deriveKey(password,salt) at frozen 1 GiB params
+    HelperRunner/HelperWire/TrustedTime/VaultSealClient/SelfTestEngine/DryRun.swift  (Task 4)
+    Schedule.swift               (Task 5) daily windows -> next lock target
+    SecureFile.swift             (Task 6) path/inode-hardened read + durable write tx
+    VaultStore.swift             (Task 6) classify / total decide matrix / load / re-seal
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
 helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
@@ -118,7 +122,10 @@ tests/
   test_support.swift             shared RESULT harness (pass/fail/check/expectThrow)
   format_suite.swift             runFormatSuite()  — Task 2a tests
   argon2_suite.swift             runArgon2Suite()  — Task 2b tests
-  main.swift                     entry point: runs both suites
+  helper_suite.swift             runHelperSuite()  — Task 4 tests
+  schedule_suite.swift           runScheduleSuite()— Task 5 tests
+  store_suite.swift              runStoreSuite()   — Task 6 tests (FakeSeal offline)
+  main.swift                     entry point: runs all suites
   skip-allowlist.txt             allowed SKIP names (currently none)
 build/                           generated; gitignored
 ```
@@ -459,24 +466,60 @@ windows → the next LOCK target (a start round + end round for the manifest), i
   **DST 23-h spring-forward (27600 rounds) and 25-h fall-back (30000 rounds)** in
   America/New_York; and the three fail-closed buckets.
 
-**Task 6 — Vault store. ⚠ THE DANGEROUS TASK.** Build as six small passes:
-(a) read/validate one file → (b) classify state {missing, parse-corrupt,
-future-claimed, future-valid-after-ready, open-window-valid, expired-valid, tampered,
-bad-owner/mode/link/path} → (c) compare primary vs `.bak` → (d) **enum-driven total
-decision (no `default`)** over the primary×`.bak` matrix → (e) write transaction →
-(f) failure-injection.
-- Unseal-as-gate; manifest mismatch → quarantine; `R<start` → corrupt; in-interval →
-  prompt; `R>end` → defensive (passwordless) re-seal.
-- **No-raw-quarantine** (hash/diagnostic only); re-seal valid-expired copies forward.
-- **Durable writes (I12):** tmp + `F_FULLFSYNC` + atomic rename for *every* step
-  (incl. `.bak` via `vault.dat.bak.tmp`, never a direct copy); delete-old-`.bak`-first;
-  post-write re-parse + byte-equality + `0600`/owner/no-symlink/`st_nlink==1`.
-- Path/inode hardening (`O_NOFOLLOW`, refuse symlinks/hardlinks, same-dir temp+rename);
-  set `isExcludedFromBackup` at dir creation.
-- Gates: stale `.bak`; symlink/hardlink/wrong-mode; force-kill + simulated-fail at each
-  write step (invariant: old-intact OR new-future-sealed; never an extra expired copy
-  beside a future one); force-kill-after-unseal-before-password; `R>end` re-seals; VLT1
-  tamper both directions; recovery-matrix totality; no-raw-escape-hatch.
+**Task 6 — Vault store. ✅ THE DANGEROUS TASK.** `./run_tests` green (197 PASS / 0 FAIL).
+Two new core files + a `SealService` injection seam, built as the six §10-step-8 passes:
+- **`Sources/VaultCore/SecureFile.swift`** — the OS-level primitives. `readHardened`
+  opens `O_RDONLY|O_NOFOLLOW|O_CLOEXEC`, `fstat`s the fd (no TOCTOU), and refuses
+  anything that isn't a regular file owned by the current uid, mode exactly `0600`,
+  `st_nlink == 1` (→ `.missing` / `.unreadable(reason)` / `.bytes`). Durable write
+  primitives: `writeTempDurable` (`O_CREAT|O_EXCL|O_NOFOLLOW`, full write, `F_FULLFSYNC`),
+  `renameDurable` (rename + `F_FULLFSYNC` file&dir), `removeDurable`, `fsyncDir` — raw
+  POSIX because FileManager offers no `F_FULLFSYNC` / `O_NOFOLLOW`-create / same-dir
+  guarantee.
+- **`Sources/VaultCore/VaultStore.swift`** —
+  - `protocol SealService` (currentRound/seal/unseal); `VaultSealClient` conforms; tests
+    inject a fake. This is what keeps the store testable offline.
+  - **(b) `classify(_:verifiedRound:)`** → `VaultFileState` (8 cases, plain tag/no
+    associated values): `missing, unreadable, corrupt, tampered, futureClaimed,
+    openWindow, expired, indeterminate`. **Unseal IS the gate**: `round_not_ready` ⇒
+    `futureClaimed` (UNTRUSTED — manifest unreadable); `auth_failed`/`parse_error` ⇒
+    `corrupt`; `timeout`/`chain_mismatch`/etc ⇒ `indeterminate`; on success → decode
+    manifest, check `outer==manifest` (else `tampered`), then `R<start` ⇒ `corrupt`
+    (impossible), `start≤R≤end` ⇒ `openWindow`, `R>end` ⇒ `expired`. (The spec's
+    `future-valid-after-ready` is not a terminal state — a future seal is unreadable, so
+    it resolves to open/expired only once its round is ready; documented in-file.)
+  - **(d) `static decide(_:_:) -> VaultAction`** — the TOTAL primary×`.bak` matrix as one
+    `switch (p,b)` with **NO `default`** (the compiler proves all 64 combos; an unhandled
+    pair fails to COMPILE). Governing rules: indeterminate anywhere ⇒ `locked`; an
+    `openWindow` copy grants `.open` **only if NO `futureClaimed` present** (future vetoes
+    access — anti-shortening I8); a `futureClaimed` present ⇒ never access, only restore
+    redundancy (`syncBackup`) from it when the sibling has no recoverable content,
+    otherwise `locked`; no-open-no-future + a valid `expired` copy ⇒ `reseal` it FORWARD;
+    nothing recoverable ⇒ `failClosed`. `futureClaimed` is explicitly NOT "valid".
+  - **`load()`** orchestrates: get verified round (fail ⇒ `.offline`; `isStale` ⇒
+    `.offline`), classify both, collect **hash-only `QuarantineRecord`s** for
+    tampered/corrupt sides, run `decide`, execute. Returns `VaultLoadResult`
+    {`openWindow(window,payload)`, `lockedUntil(displayStartRound?)`, `resealed(window)`,
+    `failClosed(reason)`, `offline`}. The store never decrypts (payload handed up for the
+    UI to PW01.open with the password) — which keeps defensive re-seal passwordless.
+  - **(f) `defensiveReseal`** (passwordless): reuse the unsealed PW01 bytes verbatim,
+    `schedule.nextLock(now,R)` → NEXT window, `commit`. **(e) `commit` / `writeVaultPair`**
+    do the §6 order exactly: write `vault.dat.tmp`+fsync → delete old `.bak` → rename over
+    `vault.dat` (fsync file+dir) → write `vault.dat.bak.tmp`+fsync → rename over `.bak`
+    (fsync dir) → **post-verify** (re-read both hardened, byte-equality, 0600/owner/link).
+  - `ensureDirectory()` creates the dir `0700` and **sets+verifies `isExcludedFromBackup`**.
+  - Closed `StoreError` domain {io, helper, format, schedule, verifyFailed}.
+- **No-raw-quarantine enforced at the TYPE level:** `QuarantineRecord` has only
+  `sha256Hex` + reason + side — it structurally cannot hold the raw/decryptable bytes.
+- Gates (`tests/store_suite.swift`, 46 checks): decide totality (all 64) + invariants
+  (future-vetoes-open, open-grants-without-future, indeterminate-locks) + §11 matrix-row
+  spot-checks; SecureFile symlink/hardlink/wrong-mode/over-cap/missing; classify for each
+  of the 8 states; load() for offline, both-missing-failclosed, open-window, the two
+  honest crash states (**(expired,missing)⇒reseal-forward-both-future**;
+  **(future,missing)⇒syncBackup-no-access-no-seal**), both-future-locked, tampered+expired
+  ⇒ reseal-`.bak`-forward + hash-only quarantine, durable-write pair identical/0600,
+  `isExcludedFromBackup`. A `FakeSeal` simulates the time-lock offline (seal tags target;
+  unseal returns `round_not_ready` until `R≥target`).
 
 **Task 7 — Re-seal triggers (lifecycle).** Lock button; graceful quit; committed
 end-round reached while running; defensive re-seal on launch when `R>end`. Enforce the
@@ -522,12 +565,17 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1, 2, 3, 4, 5: **complete, `./run_tests` green (152 checks).**
-- No vault-store, no UI, no `.app`, no real secrets yet (by design).
-- Next: **Task 6 — Vault store. ⚠ THE DANGEROUS TASK.** Build as the six small passes
-  (a–f) in the road map above; the **enum-driven total decision over the primary×`.bak`
-  matrix (no `default`)** and the durable-atomic-write discipline are the load-bearing
-  parts. **Before implementing, read `app.md` §6, §10 steps 8–9, the §11 "recovery
-  decision matrix", §11 ¶4–6, and §7a** — that is where an "innocent" fallback becomes an
-  escape hatch. Schedule (Task 5) now supplies the start/end rounds for the manifest the
-  store will seal.
+- Tasks 1, 2, 3, 4, 5, 6: **complete, `./run_tests` green (197 checks).**
+- No UI, no `.app`, no real secrets yet (by design). The store exists but is only driven
+  by tests; nothing calls `load()`/`commit()` from an app shell yet.
+- Next: **Task 7 — Re-seal triggers (lifecycle).** Wire the store's `commit`/defensive
+  re-seal into the four lifecycle events (Lock button; graceful quit; committed
+  `targetEndRound` reached while running; defensive re-seal on launch when `R>end` — the
+  launch path is already done by `VaultStore.load()`). The load-bearing rule is the
+  **forward-only / anti-shortening invariant (I8)**: an *interactive* re-seal (app open,
+  has password + plaintext) builds a fresh PW01 from the in-memory notes and calls
+  `store.commit(pw01:window:verifiedLatest:)` with the NEXT schedule window; while the
+  on-disk target is still future, launch must never unseal/rewrap. **Before implementing,
+  read `app.md` §6 (the two re-seal paths + the window-end ⚠ note), §10 steps 7/9, §11 ¶4–5,
+  and the §11 DiD #2 anti-shortening clause.** The store already provides the passwordless
+  defensive path and the durable write; Task 7 adds the interactive path + the triggers.
