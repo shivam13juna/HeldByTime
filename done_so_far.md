@@ -103,6 +103,8 @@ Sources/
     Schedule.swift               (Task 5) daily windows -> next lock target
     SecureFile.swift             (Task 6) path/inode-hardened read + durable write tx
     VaultStore.swift             (Task 6) classify / total decide matrix / load / re-seal
+    SecureRandom.swift           (Task 7) system-CSPRNG salt/nonce source
+    VaultSession.swift           (Task 7) open vault: interactive re-seal triggers (Lock/quit/window-end)
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
 helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
@@ -125,6 +127,7 @@ tests/
   helper_suite.swift             runHelperSuite()  — Task 4 tests
   schedule_suite.swift           runScheduleSuite()— Task 5 tests
   store_suite.swift              runStoreSuite()   — Task 6 tests (FakeSeal offline)
+  session_suite.swift            runSessionSuite() — Task 7 tests (reuses FakeSeal)
   main.swift                     entry point: runs all suites
   skip-allowlist.txt             allowed SKIP names (currently none)
 build/                           generated; gitignored
@@ -521,9 +524,44 @@ Two new core files + a `SealService` injection seam, built as the six §10-step-
   `isExcludedFromBackup`. A `FakeSeal` simulates the time-lock offline (seal tags target;
   unseal returns `round_not_ready` until `R≥target`).
 
-**Task 7 — Re-seal triggers (lifecycle).** Lock button; graceful quit; committed
-end-round reached while running; defensive re-seal on launch when `R>end`. Enforce the
-**forward-only / anti-shortening** invariant (I8).
+**Task 7 — Re-seal triggers (lifecycle). ✅** `./run_tests` green (212 PASS / 0 FAIL).
+The INTERACTIVE re-seal path (app open, has password + plaintext) and the three triggers
+that drive it, plus the CSPRNG source — all in `Sources/VaultCore/`:
+- **`SecureRandom.swift`** — the single source of fresh salts + nonces, from
+  `SystemRandomNumberGenerator` (the system CSPRNG on Apple platforms; works for any
+  byte count — note CryptoKit's `SymmetricKeySize(bitCount:)` traps on non-standard
+  sizes like 96, which is why we don't use it). Every re-seal draws a new salt + nonce
+  here so no two saves share a key+nonce (FORMAT.md §7, DiD #3).
+- **`VaultSession.swift`** — an OPEN, in-memory vault: the user's password (held only
+  while unlocked) + the **committed window** we opened under (from the manifest, never
+  the schedule).
+  - `Trigger { lockButton, gracefulQuit, windowEndReached }` — the three interactive
+    events, all funnelling into ONE `reseal`, so none can be a weaker bypass. (The 4th
+    lifecycle event — the launch-time, NO-password defensive re-seal when `R>end` — is
+    NOT here; it lives in `VaultStore.load()`/`defensiveReseal` from Task 6.)
+  - **`static open(store:window:payload:password:)`** — bridges `load()`'s
+    `.openWindow(window,payload)` to a live session: re-derives the key from the salt in
+    the PW01 header (via the new `PW01.salt(from:)` accessor that keeps the header-offset
+    in one place), `PW01.open`s, returns `(notes, session)`. A wrong password ⇒
+    `.format(.authError)`, no partial plaintext.
+  - **`hasWindowEnded(verifiedRound:)`** — `R > openWindow.endRound`; the predicate the
+    UI polls to fire the window-end re-seal on a live session (crypto can't force-close
+    an already-open session — §6 ⚠ note).
+  - **`reseal(notes:trigger:)`** — the engine: (1) mandatory drand-verified round
+    (offline / `isStale` ⇒ fail closed, no write); (2) `schedule.nextLock` → the NEXT
+    window (enforces the freshness + min-lock floors); (3) **forward-only guard** —
+    refuse to commit a target not strictly future of `R` (I8 anti-shortening, explicit
+    on top of nextLock's guarantee and the helper's own check); (4) build a FRESH PW01
+    (new salt+nonce, key re-derived); (5) `store.commit` (seal to start, durable write
+    both, verify). Ordered fail-fast-before-Argon2 so the fail-closed paths cost nothing.
+- Gates (`tests/session_suite.swift`, 15 checks, reuses the offline `FakeSeal`):
+  open round-trip (right pw decrypts / wrong pw fails closed); `hasWindowEnded`
+  inside/past; a **full forward cycle** (edit notes → `reseal(.windowEndReached)` ⇒ both
+  copies future-locked, one seal, then re-opens at the new start recovering the EDITED
+  notes under a freshly-derived key); the **anti-shortening floor**
+  (`startRound − R ≥ MIN_LOCK_DURATION_ROUNDS`); and the fail-closed paths — offline (all
+  three triggers fail, on-disk blob byte-for-byte untouched, 0 seals), stale round, and
+  no-schedule-window — each leaving the vault unwritten.
 
 ### PHASE C (setup, UI, leakage, packaging)
 
@@ -565,17 +603,21 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1, 2, 3, 4, 5, 6: **complete, `./run_tests` green (197 checks).**
-- No UI, no `.app`, no real secrets yet (by design). The store exists but is only driven
-  by tests; nothing calls `load()`/`commit()` from an app shell yet.
-- Next: **Task 7 — Re-seal triggers (lifecycle).** Wire the store's `commit`/defensive
-  re-seal into the four lifecycle events (Lock button; graceful quit; committed
-  `targetEndRound` reached while running; defensive re-seal on launch when `R>end` — the
-  launch path is already done by `VaultStore.load()`). The load-bearing rule is the
-  **forward-only / anti-shortening invariant (I8)**: an *interactive* re-seal (app open,
-  has password + plaintext) builds a fresh PW01 from the in-memory notes and calls
-  `store.commit(pw01:window:verifiedLatest:)` with the NEXT schedule window; while the
-  on-disk target is still future, launch must never unseal/rewrap. **Before implementing,
-  read `app.md` §6 (the two re-seal paths + the window-end ⚠ note), §10 steps 7/9, §11 ¶4–5,
-  and the §11 DiD #2 anti-shortening clause.** The store already provides the passwordless
-  defensive path and the durable write; Task 7 adds the interactive path + the triggers.
+- Tasks 1, 2, 3, 4, 5, 6, 7: **complete, `./run_tests` green (212 checks).**
+- No UI, no `.app`, no real secrets yet (by design). The store + session exist but are
+  only driven by tests; nothing calls `load()`/`reseal()` from an app shell yet — the
+  three interactive triggers are an engine the UI (Task 9) wires to events.
+- Next: **Task 8 — First-run setup + on-device self-test gate.** Create vault, confirm
+  password ×2 (exact-byte + min-length + weak-warning), set schedule, then a **hard
+  self-test before any real secret is stored**, driven by the release-shipped
+  `SelfTestEngine` (UI path only — no CLI/flag): Argon2 RFC-vector + on-device benchmark;
+  bundled `vaultseal` executable + signature-valid + real seal/unseal/`current-round`
+  round-trip; **≥1 drand endpoint reachable through Canopy = hard pass, strongly warn
+  unless ≥2**. Verify `isExcludedFromBackup` (already done by `VaultStore.ensureDirectory`)
+  + hard-warn about Time Machine / APFS snapshots / cloud sync. Self-test runs on a
+  throwaway payload in a **separate temp dir** (never the real vault path), cleaned up on
+  success *and* failure. **Before implementing, read `app.md` §9 (self-test), §10 step 10,
+  §11 (required tests / endpoint policy).** `SelfTestEngine.swift` already exists from
+  Task 4 with the skeleton steps (`argon2Vector`, `helperBinaryValid`, `helperResponds`);
+  Task 8 builds the first-run gate (temp-dir isolation, ≥2-endpoint policy, data-loss
+  confirmation) on top of it.
