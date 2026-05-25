@@ -52,6 +52,18 @@ enum PW01 {
         return header + Array(box.ciphertext) + Array(box.tag)
     }
 
+    /// The 16-byte Argon2 salt recorded in the header — needed to RE-derive the
+    /// key from the password (PW01 itself never derives). Keeps the header-offset
+    /// arithmetic in one place: magic(4)|version(1)|kdf(1)|m(4)|t(4)|p(4)|argon2v(1)
+    /// = 19 bytes before the salt.
+    static let saltOffset = 19
+    static func salt(from container: [UInt8]) throws -> [UInt8] {
+        guard container.count >= saltOffset + VaultConstants.ARGON2_SALT_LEN else {
+            throw VaultFormatError.corrupt("PW01 too short for salt \(container.count)")
+        }
+        return Array(container[saltOffset..<saltOffset + VaultConstants.ARGON2_SALT_LEN])
+    }
+
     static func open(_ container: [UInt8], key: SymmetricKey) throws -> [UInt8] {
         guard container.count >= headerLen + VaultConstants.MIN_CIPHERTEXT_TAG_LEN else {
             throw VaultFormatError.corrupt("PW01 too short \(container.count)")

@@ -22,7 +22,8 @@ private func stk(_ n: String, _ cond: Bool, _ d: String = "") { check("store/" +
 
 // MARK: - Fake seal service (offline time-lock simulator)
 
-private final class FakeSeal: SealService {
+// Internal (not file-private) so the Task 7 session suite can reuse it.
+final class FakeSeal: SealService {
     var R: UInt64
     var offline = false
     private(set) var sealCalls = 0
