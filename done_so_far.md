@@ -424,10 +424,40 @@ green across 1–4 (126 PASS / 0 FAIL). The Swift side of the helper boundary, i
 
 ### PHASE B (schedule, store, lifecycle)
 
-**Task 5 — Schedule logic.** Multiple daily windows → the nearest future start round
-that also clears `latest + FRESHNESS_MARGIN_ROUNDS` and `MIN_LOCK_DURATION_ROUNDS`
-(too-near skips forward). Gates: DST/timezone, midnight-crossing, adjacent, overlapping,
-too-near-skips-forward.
+**Task 5 — Schedule logic. ✅** `./run_tests` green (152 PASS / 0 FAIL). Daily wall-clock
+windows → the next LOCK target (a start round + end round for the manifest), in
+`Sources/VaultCore/Schedule.swift`:
+- `TimeOfDay` (range-validated; nil ⇒ fail closed at construction), `DailyWindow`
+  (`end < start` by seconds-of-day ⇒ crosses midnight; `end == start` is **degenerate**,
+  NOT a 24-h window — this is a time-LOCK), and `Schedule { windows, calendar }`. The
+  `Calendar` carries the time zone and is **injected** so DST/midnight are handled by the
+  calendar, not by adding fixed seconds.
+- `nextLock(now:verifiedLatest:) -> Result<ScheduleDecision, ScheduleError>` picks the
+  **soonest VALID start** across all windows (min over candidates — adjacent/overlapping
+  need no special case). A candidate start must be strictly future AND clear two
+  **independent** floors, else it skips forward to that window's next daily occurrence:
+  - **freshness:** `startRound > verifiedLatest + FRESHNESS_MARGIN_ROUNDS` (so the
+    helper's own seal-freshness rule accepts the target — schedule and helper must agree
+    or the vault wedges on a rejected boundary re-seal).
+  - **minimum lock:** `startRound − nowRound >= MIN_LOCK_DURATION_ROUNDS` measured from
+    the local-clock round (`expectedRound`), so a Lock seconds before open isn't a
+    near-zero commitment.
+- Boundaries map to rounds via the new **`TrustedTime.roundForTime(at:)`** — the round
+  published *at or after* a date (ceil: `ceil((t−genesis)/period)+1`), the inverse used
+  for *future* boundaries so a window opens no earlier (read half-open, closes no later)
+  than the wall clock asks. Contrast `expectedRound` (floor, the current round, used to
+  deny on a stale latest).
+- Fail-closed buckets (`ScheduleError`): `.noWindows`, `.degenerateWindow` (span < one
+  period), `.noValidStartWithinHorizon` (defensive 16-occurrence/window lookahead cap;
+  normal operation resolves in ≤2 occurrences — the cap only stops a runaway search when
+  `verifiedLatest` is implausibly far ahead). Never emits a target the helper would reject.
+- Gates (`tests/schedule_suite.swift`, 26 checks): `roundForTime` ceil vs `expectedRound`
+  floor at/over a publication boundary; today/inside→tomorrow/after→tomorrow selection;
+  **each skip floor proven independently** (min-lock skips with freshness slack; freshness
+  skips with min-lock slack); adjacent + overlapping + cross-window "later-today beats
+  tomorrow"; midnight crossing (start today / end next day / inside→next night);
+  **DST 23-h spring-forward (27600 rounds) and 25-h fall-back (30000 rounds)** in
+  America/New_York; and the three fail-closed buckets.
 
 **Task 6 — Vault store. ⚠ THE DANGEROUS TASK.** Build as six small passes:
 (a) read/validate one file → (b) classify state {missing, parse-corrupt,
@@ -492,11 +522,12 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1, 2, 3: **complete, `./run_tests` green (73 checks).**
+- Tasks 1, 2, 3, 4, 5: **complete, `./run_tests` green (152 checks).**
 - No vault-store, no UI, no `.app`, no real secrets yet (by design).
-- Next: **Task 4 — Swift seal/unseal wrapper + trusted time. ⏸ MILESTONE.** It drives
-  the `vaultseal` helper as a hardened subprocess (absolute bundled path, never a shell;
-  minimal env; capped IO; timeout = fail-closed; exec-bit + launch-time hash check) and
-  maps the closed helper error domain totally (unknown code / malformed stderr /
-  non-zero-without-JSON / stdout-beside-error ⇒ fail closed). After Task 4, `./run_tests`
-  must be green across Tasks 1–4 before any store/UI/real-secret work begins.
+- Next: **Task 6 — Vault store. ⚠ THE DANGEROUS TASK.** Build as the six small passes
+  (a–f) in the road map above; the **enum-driven total decision over the primary×`.bak`
+  matrix (no `default`)** and the durable-atomic-write discipline are the load-bearing
+  parts. **Before implementing, read `app.md` §6, §10 steps 8–9, the §11 "recovery
+  decision matrix", §11 ¶4–6, and §7a** — that is where an "innocent" fallback becomes an
+  escape hatch. Schedule (Task 5) now supplies the start/end rounds for the manifest the
+  store will seal.
