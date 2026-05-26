@@ -27,6 +27,30 @@ struct CurrentRoundInfo: Equatable, Decodable {
     }
 }
 
+/// One endpoint's reachability, from the helper's `endpoints` probe. `code` is
+/// "" when `ok`, else one of the closed helper-domain codes (e.g. "timeout",
+/// "chain_mismatch"). The first-run self-test applies the >=1-hard / >=2-warn
+/// policy over these and treats any `chain_mismatch` as a hard failure.
+struct EndpointStatus: Equatable, Decodable {
+    let endpoint: String
+    let ok: Bool
+    let round: UInt64
+    let code: String
+}
+
+/// The helper's per-endpoint diagnostic report (FORMAT.md §3; helper `endpoints`).
+struct EndpointReport: Equatable, Decodable {
+    let endpoints: [EndpointStatus]
+    let okCount: Int
+    let total: Int
+
+    enum CodingKeys: String, CodingKey {
+        case endpoints
+        case okCount = "ok_count"
+        case total
+    }
+}
+
 struct VaultSealClient {
     let runner: HelperRunner
 
@@ -63,6 +87,22 @@ struct VaultSealClient {
             return .failure(e)
         case .success(let info):
             return seal(payload: payload, targetRound: targetRound, verifiedLatest: info.round)
+        }
+    }
+
+    /// Probe each compiled-in drand endpoint independently (the helper's
+    /// `endpoints` command). Used only by the first-run self-test to apply the
+    /// reachability policy; the hot path uses `currentRound()`. A clean probe
+    /// returns a report even when every endpoint is down (`okCount == 0`).
+    func probeEndpoints() -> Result<EndpointReport, HelperError> {
+        switch runner.run(arguments: ["endpoints"], stdin: Data()) {
+        case .failure(let e):
+            return .failure(e)
+        case .success(let out):
+            guard let report = try? JSONDecoder().decode(EndpointReport.self, from: out) else {
+                return .failure(.failClosed("malformed endpoints JSON"))
+            }
+            return .success(report)
         }
     }
 

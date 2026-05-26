@@ -132,6 +132,7 @@ func main() {
 	cryptoTests()
 	logicTests()
 	cliTests(bin)
+	endpointsCLITest(bin)
 
 	fmt.Printf("hermetic-done failures=%d\n", failures)
 	if failures != 0 {
@@ -239,6 +240,53 @@ func logicTests() {
 // non-zero, write nothing to stdout, and emit one closed-domain JSON error on
 // stderr. All cases fail during argument parsing, so they never touch the
 // network.
+// endpointsCLITest runs the real `endpoints` command with the network
+// black-holed (this whole harness runs behind a dead proxy). An all-down probe
+// is still a SUCCESSFUL operation: exit 0, a well-formed JSON report on stdout,
+// ok_count == 0, and total == 3. This proves the diagnostic path emits a usable
+// report even when fully offline -- exactly the fragile-Canopy scenario the
+// first-run self-test must surface rather than crash on.
+func endpointsCLITest(bin string) {
+	cmd := exec.Command(bin, "endpoints")
+	cmd.Stdin = bytes.NewReader(nil)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		fail("cli/endpoints-offline", "expected zero exit, got: "+err.Error()+" stderr="+stderr.String())
+		return
+	}
+	var report struct {
+		Endpoints []struct {
+			Endpoint string `json:"endpoint"`
+			OK       bool   `json:"ok"`
+			Round    uint64 `json:"round"`
+			Code     string `json:"code"`
+		} `json:"endpoints"`
+		OKCount int `json:"ok_count"`
+		Total   int `json:"total"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		fail("cli/endpoints-offline", "stdout not valid JSON report: "+stdout.String())
+		return
+	}
+	if report.Total != 3 || len(report.Endpoints) != 3 {
+		fail("cli/endpoints-offline", fmt.Sprintf("total=%d endpoints=%d, want 3", report.Total, len(report.Endpoints)))
+		return
+	}
+	if report.OKCount != 0 {
+		fail("cli/endpoints-offline", fmt.Sprintf("ok_count=%d, want 0 behind a dead proxy", report.OKCount))
+		return
+	}
+	for i, e := range report.Endpoints {
+		if e.OK || !wire.IsKnown(wire.Code(e.Code)) {
+			fail("cli/endpoints-offline", fmt.Sprintf("endpoint %d: ok=%v code=%q outside closed set", i, e.OK, e.Code))
+			return
+		}
+	}
+	pass("cli/endpoints-offline")
+}
+
 func cliTests(bin string) {
 	cases := []struct {
 		name string
@@ -256,6 +304,8 @@ func cliTests(bin string) {
 		{"cli/unseal-extra-arg", []string{"unseal", "x"}},
 		{"cli/unseal-forbidden-file-flag", []string{"unseal", "--file", "/etc/passwd"}},
 		{"cli/current-round-extra-arg", []string{"current-round", "x"}},
+		{"cli/endpoints-extra-arg", []string{"endpoints", "x"}},
+		{"cli/endpoints-forbidden-flag", []string{"endpoints", "--probe", "evil"}},
 		{"cli/forbidden-chain-flag", []string{"--chain", "evil"}},
 	}
 	for _, c := range cases {

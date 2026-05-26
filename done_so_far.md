@@ -105,6 +105,9 @@ Sources/
     VaultStore.swift             (Task 6) classify / total decide matrix / load / re-seal
     SecureRandom.swift           (Task 7) system-CSPRNG salt/nonce source
     VaultSession.swift           (Task 7) open vault: interactive re-seal triggers (Lock/quit/window-end)
+    PasswordPolicy.swift         (Task 8) password→bytes rules (encode/validate/confirm/weak-warning)
+    SelfTestEngine.swift         (Task 8 ✅) full on-device gate over an injectable SelfTestServices
+    FirstRunSetup.swift          (Task 8) the gated create-vault flow (engine; no SwiftUI)
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
 helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
@@ -115,7 +118,7 @@ helper/                          ★ Go module "vaultseal" (go 1.26) — the dra
   internal/drandnet/network.go   self-implemented tlock.Network over stdlib net/http
   internal/drandnet/network_test.go  httptest coverage of the real HTTP layer
   internal/seal/seal.go          seal / unseal / current-round logic
-  cmd/vaultseal/main.go          the helper binary (strict CLI; stdin->stdout)
+  cmd/vaultseal/main.go          the helper binary (strict CLI; stdin->stdout; seal/unseal/current-round/endpoints)
   cmd/hermetictests/main.go      offline RESULT-line test harness (fake net + real-beacon KAT)
   cmd/constdump/main.go          emits Go constants as JSON
 vendor/argon2/                   pinned phc-winner-argon2 (ref build) + PINNED.txt + LICENSE
@@ -128,6 +131,7 @@ tests/
   schedule_suite.swift           runScheduleSuite()— Task 5 tests
   store_suite.swift              runStoreSuite()   — Task 6 tests (FakeSeal offline)
   session_suite.swift            runSessionSuite() — Task 7 tests (reuses FakeSeal)
+  setup_suite.swift              runSetupSuite()   — Task 8 tests (PasswordPolicy + self-test + first-run, offline)
   main.swift                     entry point: runs all suites
   skip-allowlist.txt             allowed SKIP names (currently none)
 build/                           generated; gitignored
@@ -565,15 +569,56 @@ that drive it, plus the CSPRNG source — all in `Sources/VaultCore/`:
 
 ### PHASE C (setup, UI, leakage, packaging)
 
-**Task 8 — First-run setup + on-device self-test gate.** Create vault, confirm
-password ×2 (exact-byte + min-length + weak-warning), set schedule, then a **hard
-self-test before any real secret is stored**, driven by the release-shipped
-`SelfTestEngine` (UI path only — no CLI/flag): Argon2 RFC-vector + on-device benchmark;
-bundled `vaultseal` executable + signature-valid + real seal/unseal/current-round
-round-trip; **≥1 drand endpoint reachable through Canopy = hard pass, strongly warn
-unless ≥2**. Verify `isExcludedFromBackup`; hard-warn about Time Machine/APFS
-snapshots/cloud sync. Self-test runs on a throwaway payload in a temp dir, never the
-real vault path, cleaned up on success *and* failure.
+**Task 8 — First-run setup + on-device self-test gate. ✅** `./run_tests` green
+(254 PASS / 0 FAIL). The engine layer only — **no SwiftUI** (still gated to Task 9);
+the first-run UI (Task 9) drives these. New Go command + three new `VaultCore` files,
+all offline-testable:
+- **Helper `endpoints` command (Go).** A 4th read-only `vaultseal` subcommand (no
+  flags, stdin-empty, JSON-on-success): `drandnet.ProbeEndpoints()` reaches each
+  compiled-in endpoint **independently** and reports `{endpoint, ok, round, code}` per
+  endpoint plus `ok_count`/`total`. Unlike the hot-path `VerifiedLatest` (fatal on any
+  chain mismatch, returns the max), the probe is **non-fatal per endpoint** — it reports
+  every endpoint's state (a forged chain shows as `code:"chain_mismatch"`, not an abort)
+  and lets the Swift policy decide. An all-down probe is still a SUCCESSFUL operation
+  (exit 0, `ok_count:0`). Surface still has zero override flags (I9 intact). Gates:
+  httptest coverage (`network_test.go`: all-ok / one-down-non-fatal /
+  chain-mismatch-reported-not-fatal) + hermetic offline `cli/endpoints-offline`
+  (well-formed report behind a dead proxy) + two negative-CLI cases.
+- **`PasswordPolicy.swift`** — `encode` (UTF-8, NO trim/normalize/casefold — Swift's
+  `String.utf8` preserves scalars verbatim, the FORMAT.md §7 rule); `validate`
+  (`.empty` / `.tooShort(scalars)` below `MIN_PASSWORD_LENGTH` counted in **Unicode
+  scalars not bytes** / `.tooLong(bytes)` above `MAX_PASSWORD_BYTES`); `confirms`
+  (exact-byte compare — NFC≠NFD caught); `weaknessWarning` (blunt length/variety
+  heuristic, advisory only, no zxcvbn).
+- **`SelfTestEngine.swift`** (completed from the Task-4 skeleton) — now over an
+  injectable **`SelfTestServices`** (production `LiveSelfTestServices` wraps real Argon2
+  + the real `vaultseal` client; tests inject a fake → every branch runs offline). Steps
+  (each `pass`/`warn`/`fail`): `argon2Vector` (8 MiB OpenSSL-cross-checked KAT),
+  `argon2Benchmark` (**1 GiB production params**, alloc-fail ⇒ **fail closed**, over the
+  injectable latency budget ⇒ warn), `helperBinaryValid` (pinned-hash preflight),
+  `helperRoundTrip` (current-round + seal a throwaway random payload to a safely-future
+  round + persist/reload it in the scratch dir + unseal → the CORRECT result is
+  `round_not_ready`; an immediate open is a hard fail), `endpointsReachable` (**≥1 = pass,
+  exactly 1 = warn, 0 = fail, any `chain_mismatch` = hard fail**), `backupExclusion`
+  (vault dir carries `isExcludedFromBackup`). `gate()` → `.clear` / `.needsConfirmation`
+  / `.blocked` (any fail blocks; else any warn needs confirmation).
+- **`FirstRunSetup.swift`** — the gated create flow (engine, no UI): validate password +
+  exact-byte confirm → require explicit **data-loss acknowledgment** (the Time Machine /
+  APFS-snapshot / cloud-sync warnings that can't be auto-verified without admin) → run
+  the self-test gate in a **throwaway scratch dir deleted + asserted-deleted on every
+  path** (`withScratchDir`) → enforce the gate (block on fail; warnings need
+  `confirmWarnings`) → only then derive the key (fresh salt+nonce), seal the initial
+  notes to the **first scheduled window** (`schedule.nextLock` from a verified round),
+  and `commit`. Closed `SetupError` domain.
+- Gates (`tests/setup_suite.swift`, reuses `FakeSeal`): PasswordPolicy (empty / short-by-
+  scalars / max-bytes / over-cap / **NFC≠NFD confirm** / no-normalization / weak-warning);
+  SelfTestEngine every step's pass/warn/fail + the three gate verdicts; FirstRunSetup
+  (rejects bad password / confirm-mismatch / un-acknowledged data-loss / hard-failure
+  blocks with **0 seals** / warning refused-without-confirm then proceeds-with-confirm /
+  **full happy path → a real future-locked vault that re-opens with the password at the
+  committed window and recovers the initial notes**). The Task-4 `helper_suite`
+  SelfTestEngine block was migrated here (its real-subprocess capabilities stay covered by
+  the `HelperRunner`/`VaultSealClient` integration tests).
 
 **Task 9 — SwiftUI views.** Locked screen (locked-until / offline); unlock; notes
 editor with masked + reveal-on-tap secrets; settings (windows); Lock button. *(First
@@ -603,21 +648,22 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1, 2, 3, 4, 5, 6, 7: **complete, `./run_tests` green (212 checks).**
-- No UI, no `.app`, no real secrets yet (by design). The store + session exist but are
-  only driven by tests; nothing calls `load()`/`reseal()` from an app shell yet — the
-  three interactive triggers are an engine the UI (Task 9) wires to events.
-- Next: **Task 8 — First-run setup + on-device self-test gate.** Create vault, confirm
-  password ×2 (exact-byte + min-length + weak-warning), set schedule, then a **hard
-  self-test before any real secret is stored**, driven by the release-shipped
-  `SelfTestEngine` (UI path only — no CLI/flag): Argon2 RFC-vector + on-device benchmark;
-  bundled `vaultseal` executable + signature-valid + real seal/unseal/`current-round`
-  round-trip; **≥1 drand endpoint reachable through Canopy = hard pass, strongly warn
-  unless ≥2**. Verify `isExcludedFromBackup` (already done by `VaultStore.ensureDirectory`)
-  + hard-warn about Time Machine / APFS snapshots / cloud sync. Self-test runs on a
-  throwaway payload in a **separate temp dir** (never the real vault path), cleaned up on
-  success *and* failure. **Before implementing, read `app.md` §9 (self-test), §10 step 10,
-  §11 (required tests / endpoint policy).** `SelfTestEngine.swift` already exists from
-  Task 4 with the skeleton steps (`argon2Vector`, `helperBinaryValid`, `helperResponds`);
-  Task 8 builds the first-run gate (temp-dir isolation, ≥2-endpoint policy, data-loss
-  confirmation) on top of it.
+- Tasks 1–8: **complete, `./run_tests` green (254 checks).**
+- No UI, no `.app`, no real secrets yet (by design). The store, session, self-test, and
+  first-run flow are all **engine layers** driven only by tests; nothing wires them to an
+  app shell yet. `FirstRunSetup`/`SelfTestEngine` are what the first-run UI (Task 9)
+  calls; the three interactive re-seal triggers are what the running-app UI wires to
+  events (Lock button / Cmd-Q / a window-end poll).
+- Next: **Task 9 — SwiftUI views.** Locked screen (locked-until vs offline), unlock,
+  notes editor with **masked + reveal-on-tap** secrets, settings (windows), **Lock
+  button**; seal on graceful quit. This is the **first task allowed to `import SwiftUI`**
+  — the `run_tests` phase guard (step 1) currently FAILS the build on any
+  SwiftUI/AppKit/Cocoa import, so that guard must be **relaxed for Task 9** (e.g. allow
+  the imports only under the new UI source dir) as part of the task, not silently
+  deleted. The UI wires to the existing engines: `FirstRunSetup.create(...)` /
+  `runSelfTest()` for onboarding, `VaultStore.load()` for the locked/open decision,
+  `VaultSession.open(...)` + `reseal(...)` for the unlocked session and its triggers.
+  Keep all secret handling ready for Task 10's no-durable-plaintext pass (don't add
+  logging/autosave/state-restoration now). **Before implementing, read `app.md` §10 step
+  11 and §11** (masked/reveal; the open-vs-locked screen uses `load()`'s result, never the
+  mutable schedule). Per the project's milestone discipline, the user instigates Task 9.
