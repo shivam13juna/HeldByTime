@@ -1,12 +1,14 @@
-// NotesEditorView.swift — Task 9: the unlocked editor. Free-text notes plus the
-// labelled secrets, each MASKED by default and revealed only on an explicit tap
-// (app.md §2). The Lock button re-seals forward (VaultSession via the model) and
-// returns to the locked screen; Cmd-Q does the same through the app delegate.
+// NotesEditorView.swift — the unlocked editor. Free-text notes plus the labelled
+// secrets, each MASKED by default and revealed only on an explicit tap (app.md
+// §2). The Lock button re-seals forward (VaultSession via the model) and returns
+// to the locked screen; Cmd-Q does the same through the app delegate.
 //
-// Task 10 (no-durable-plaintext) will replace the plain TextEditor/SecureField
-// with a hardened NSTextView wrapper and disable autosave / undo persistence /
-// spellcheck / data-detectors on these fields. Task 9 keeps the standard SwiftUI
-// controls (it is type-checked, not yet runnable) and adds no autosave/logging.
+// Task 10 (no durable plaintext, app.md §9 / I13): the notes use the hardened
+// NSTextView wrapper (HardenedTextEditor) because SwiftUI's TextEditor can't
+// disable spellcheck / data-detectors / undo persistence. Secret VALUES are
+// entered through SecureField (the secure field editor disables those services
+// by construction); revealing shows a read-only plaintext echo, never an
+// unhardened editable field. Nothing here logs or autosaves a secret.
 
 import SwiftUI
 
@@ -58,16 +60,18 @@ struct NotesEditorView: View {
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Notes").font(.title3).bold()
-            TextEditor(text: $model.content.notes)
-                .font(.body.monospaced())
+            // Hardened NSTextView — no spellcheck/data-detectors/undo persistence.
+            HardenedTextEditor(text: $model.content.notes)
                 .frame(minHeight: 160)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
         }
     }
 }
 
-/// One secret row: label + value. The value is masked until the eye is tapped,
-/// and editable in place. Revealing is per-row and resets when the view rebuilds.
+/// One secret row: label + value. Editing always happens in a SecureField (the
+/// secure field editor masks input and disables spellcheck/data-detection by
+/// construction — app.md §9). Tapping the eye reveals a READ-ONLY plaintext echo
+/// so the value can be read without ever routing it through an unhardened,
+/// editable field. Reveal is per-row and resets when the view rebuilds.
 struct SecretRow: View {
     @Binding var secret: VaultSecret
     @State private var revealed = false
@@ -77,23 +81,26 @@ struct SecretRow: View {
             TextField("Label", text: $secret.label)
                 .font(.callout).foregroundStyle(.secondary)
                 .textFieldStyle(.plain)
+                .autocorrectionDisabled()
             HStack {
-                if revealed {
-                    TextField("value", text: $secret.value)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    // Masked, non-editing display — tap the eye to edit/reveal.
-                    Text(secret.masked)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                }
+                SecureField("value", text: $secret.value)
+                    .textFieldStyle(.roundedBorder)
                 Button {
                     revealed.toggle()
                 } label: {
                     Image(systemName: revealed ? "eye.slash" : "eye")
                 }
                 .help(revealed ? "Hide" : "Reveal")
+            }
+            if revealed {
+                // Read-only echo (selectable so it can be copied deliberately —
+                // clipboard is an accepted out-of-scope surface, app.md §2).
+                Text(secret.value.isEmpty ? "—" : secret.value)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             }
         }
         .padding(.vertical, 4)
