@@ -21,6 +21,19 @@ enum TrustedTime {
         return UInt64((now - genesis) / period) + 1
     }
 
+    /// The wall-clock instant at which round `round` is published:
+    /// `genesis + (round − 1)·period`. The inverse of `expectedRound(at:)`,
+    /// used ONLY for DISPLAY — turning the untrusted VLT1 hint or a committed
+    /// start round into a "locked until …" local time on the locked screen.
+    /// It never authorizes access (the unseal is the gate). Round 0 (which does
+    /// not exist; rounds clamp to ≥ 1) maps to genesis.
+    static func date(forRound round: UInt64) -> Date {
+        let genesis = Int64(VaultConstants.DRAND_GENESIS_UNIX)
+        let period = Int64(VaultConstants.DRAND_PERIOD_SECONDS)
+        let prior = round == 0 ? 0 : Int64(round - 1)
+        return Date(timeIntervalSince1970: TimeInterval(genesis + prior * period))
+    }
+
     /// The first drand round whose beacon is published at or after `date`.
     ///
     /// Publication schedule: round N is published at `genesis + (N−1)·period`.

@@ -45,8 +45,13 @@ numbers match the `# ----` comments in `run_tests`:
 6. **Argon2id static lib** — `clang` builds the vendored portable `ref` build +
    `Sources/CArgon2/shim.c` into `build/libargon2.a`.
 7. **Test binary** — `swiftc` compiles `Sources/Constants` + `Sources/VaultCore/*` +
-   `tests/{test_support,format_suite,argon2_suite,main}.swift`, linked against
-   `libargon2.a` and the `CArgon2` module → `build/vault_tests`, then runs it.
+   all `tests/*_suite.swift` + `tests/main.swift`, linked against `libargon2.a` and the
+   `CArgon2` module → `build/vault_tests`, then runs it.
+7b. **Dry-run release gate** (Task 4) — compiles VaultCore release vs `-D DEBUG` and
+   asserts the `VAULT_DRYRUN_SURFACE_V1` marker is ABSENT from release, PRESENT in debug.
+7c. **UI type-check** (Task 9) — `swiftc -typecheck -parse-as-library` of Constants +
+   VaultCore + `Sources/VaultApp/**` against SwiftUI; the UI must compile against the real
+   engine APIs. No bundle is produced or run (that is Task 11).
 
 **Aggregation rule:** exit 0 only if zero `FAIL` lines and zero un-allowlisted `SKIP`
 lines (`tests/skip-allowlist.txt`). `RESULT: INFO` lines are informational (e.g. the
@@ -108,6 +113,17 @@ Sources/
     PasswordPolicy.swift         (Task 8) password→bytes rules (encode/validate/confirm/weak-warning)
     SelfTestEngine.swift         (Task 8 ✅) full on-device gate over an injectable SelfTestServices
     FirstRunSetup.swift          (Task 8) the gated create-vault flow (engine; no SwiftUI)
+    VaultContent.swift           (Task 9) structured plaintext model (notes + masked secrets); JSON encode/decode
+    LockScreen.swift             (Task 9) pure VaultLoadResult→LockScreenInfo mapper (canPrompt = openWindow only)
+  VaultApp/                      ★ (Task 9) the SwiftUI layer — the ONLY dir allowed to import SwiftUI/AppKit
+    VaultApp.swift               @main App + NSApplicationDelegate (re-seal on graceful quit) + RootView phase switch
+    AppModel.swift               ObservableObject coordinator (bootstrap/unlock/lock/sealForQuit) — thin glue to engines
+    AppConfiguration.swift       paths + compiled-in helper hash (empty ⇒ fail-closed until Task 11) + SchedulePrefs (JSON)
+    Views/LockedView.swift       sealed/offline/failed screen — NO password field
+    Views/UnlockView.swift       password prompt (only reached on .openWindow)
+    Views/NotesEditorView.swift  notes + masked/reveal-on-tap secret rows + Lock button
+    Views/SettingsView.swift     daily-windows editor (sheet)
+    Views/FirstRunView.swift     setup flow + FirstRunModel (drives FirstRunSetup + self-test report)
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
 helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
@@ -132,6 +148,7 @@ tests/
   store_suite.swift              runStoreSuite()   — Task 6 tests (FakeSeal offline)
   session_suite.swift            runSessionSuite() — Task 7 tests (reuses FakeSeal)
   setup_suite.swift              runSetupSuite()   — Task 8 tests (PasswordPolicy + self-test + first-run, offline)
+  ui_suite.swift                 runUISuite()      — Task 9 tests (VaultContent + LockScreen + round→time)
   main.swift                     entry point: runs all suites
   skip-allowlist.txt             allowed SKIP names (currently none)
 build/                           generated; gitignored
@@ -620,9 +637,51 @@ all offline-testable:
   SelfTestEngine block was migrated here (its real-subprocess capabilities stay covered by
   the `HelperRunner`/`VaultSealClient` integration tests).
 
-**Task 9 — SwiftUI views.** Locked screen (locked-until / offline); unlock; notes
-editor with masked + reveal-on-tap secrets; settings (windows); Lock button. *(First
-task allowed to import SwiftUI — the phase guard enforces this.)*
+**Task 9 — SwiftUI views. ✅** `./run_tests` green (277 PASS / 0 FAIL). The first
+task allowed to `import SwiftUI`. Two halves: testable presentation LOGIC added to
+`VaultCore` (compiled into `vault_tests`, real assertions) + the SwiftUI views in a
+NEW `Sources/VaultApp/` dir (can't run headless / no `.app` until Task 11 — gated by
+a full **type-check** against the real engine APIs):
+- **Phase guard relaxed, not deleted** (`run_tests` step 1): the SwiftUI/AppKit/Cocoa
+  import scan now runs with `--exclude-dir=VaultApp`, so the engine core, tooling, and
+  tests stay UI-free while the UI layer may import them. Proven non-vacuous (injecting
+  `import SwiftUI` into a VaultCore file still trips it).
+- **New gate `ui/typecheck`** (`run_tests` step 7c): `swiftc -typecheck
+  -parse-as-library` of Constants + VaultCore + VaultApp against SwiftUI — the UI must
+  compile against `FirstRunSetup`/`VaultStore`/`VaultSession` every run, catching
+  wiring drift without producing or executing a bundle.
+- **Testable VaultCore additions (no SwiftUI):**
+  - `VaultContent.swift` — the structured plaintext PW01 seals (`notes: String` +
+    `[VaultSecret]`); deterministic JSON `encode()`/`decode()` with the
+    `MAX_PLAINTEXT_NOTES_BYTES` cap (over-cap ⇒ `.sizeLimit`, garbage ⇒ `.parseError`,
+    empty is valid); `VaultSecret.masked` is a FIXED-WIDTH bullet run (hides value AND
+    length); `initialTemplate` = the two app.md §2 secrets, empty.
+  - `LockScreen.swift` — pure `describe(VaultLoadResult) -> LockScreenInfo` mapper.
+    `canPrompt` is true ONLY for `.openWindow` (the visible half of unseal-as-gate —
+    no locked/offline/failed state can show a password field); `failClosed` offers no
+    retry; the "locked until" time is DISPLAY-only (untrusted hint).
+  - `TrustedTime.date(forRound:)` — round → publication instant, the inverse of
+    `expectedRound`, used only to render "locked until <local time>".
+- **SwiftUI layer (`Sources/VaultApp/`, type-check-gated):** `VaultApp.swift` (@main +
+  `NSApplicationDelegateAdaptor` that re-seals on graceful quit — the §2 trigger #2);
+  `AppModel` (ObservableObject coordinator: `bootstrap`→firstRun-vs-`load()`, `unlock`,
+  `lock`/window-end re-seal, `sealForQuit`, settings) — thin glue, every security
+  decision stays in the engines; `AppConfiguration`/`SchedulePrefs` (paths, the
+  compiled-in helper hash defaulting to EMPTY ⇒ preflight fail-closed until Task 11
+  fills it, and JSON-persisted windows); views `LockedView` (no password field),
+  `UnlockView` (generic failure, no partial plaintext), `NotesEditorView` (notes +
+  masked/reveal-on-tap secret rows + Lock button), `SettingsView` (windows editor),
+  `FirstRunView`+`FirstRunModel` (password ×2 + live weakness hint, initial secrets,
+  windows, data-loss ack, per-step self-test report, warning-confirm alert → drives
+  `FirstRunSetup.create`).
+- Gates (`tests/ui_suite.swift`, 23 checks): VaultContent round-trip / empty-valid /
+  deterministic / oversize-failclosed / garbage-decode / mask-hides-value+length /
+  template; LockScreen open-canprompts / every-locked-state-no-prompt / offline-retry /
+  failclosed-no-retry / display-time-present; round→date formula + inverse-of-expected.
+- **No Task 10 work pulled forward:** no logging, autosave, state-restoration, or undo
+  persistence added; the editor uses standard `TextEditor`/`SecureField` that the Task
+  10 no-durable-plaintext pass will harden (NSTextView wrapper, spellcheck/data-detector
+  off, `RLIMIT_CORE=0`). In-code comments mark where that hardening lands.
 
 **Task 10 — No-durable-plaintext-leakage pass.** No logging of secrets; state
 restoration / autosave / undo persistence off; spellcheck/grammar/data-detectors/
@@ -648,22 +707,23 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1–8: **complete, `./run_tests` green (254 checks).**
-- No UI, no `.app`, no real secrets yet (by design). The store, session, self-test, and
-  first-run flow are all **engine layers** driven only by tests; nothing wires them to an
-  app shell yet. `FirstRunSetup`/`SelfTestEngine` are what the first-run UI (Task 9)
-  calls; the three interactive re-seal triggers are what the running-app UI wires to
-  events (Lock button / Cmd-Q / a window-end poll).
-- Next: **Task 9 — SwiftUI views.** Locked screen (locked-until vs offline), unlock,
-  notes editor with **masked + reveal-on-tap** secrets, settings (windows), **Lock
-  button**; seal on graceful quit. This is the **first task allowed to `import SwiftUI`**
-  — the `run_tests` phase guard (step 1) currently FAILS the build on any
-  SwiftUI/AppKit/Cocoa import, so that guard must be **relaxed for Task 9** (e.g. allow
-  the imports only under the new UI source dir) as part of the task, not silently
-  deleted. The UI wires to the existing engines: `FirstRunSetup.create(...)` /
-  `runSelfTest()` for onboarding, `VaultStore.load()` for the locked/open decision,
-  `VaultSession.open(...)` + `reseal(...)` for the unlocked session and its triggers.
-  Keep all secret handling ready for Task 10's no-durable-plaintext pass (don't add
-  logging/autosave/state-restoration now). **Before implementing, read `app.md` §10 step
-  11 and §11** (masked/reveal; the open-vs-locked screen uses `load()`'s result, never the
-  mutable schedule). Per the project's milestone discipline, the user instigates Task 9.
+- Tasks 1–9: **complete, `./run_tests` green (277 checks).**
+- The SwiftUI app shell now exists in `Sources/VaultApp/` and type-checks against the
+  engines, but there is **still no `.app` and no real secrets** — the bundle isn't
+  assembled until Task 11, and `AppConfiguration.compiledHelperSHA256` defaults to EMPTY
+  (so `HelperRunner.preflight` fail-closes until Task 11 compiles in the real hash). The
+  store, session, self-test, and first-run flow remain the authoritative engines; the UI
+  is thin glue: `bootstrap`→`VaultStore.load()` for locked/open, `VaultSession.open`/
+  `reseal` for the session + its triggers (Lock / Cmd-Q / window-end), and
+  `FirstRunSetup` for onboarding.
+- Next: **Task 10 — No-durable-plaintext-leakage pass.** Replace the editor's standard
+  `TextEditor`/`SecureField` with a hardened **`NSTextView` (`NSViewRepresentable`)**
+  wrapper if needed; turn **state restoration / autosave / undo persistence OFF**;
+  disable **spellcheck / grammar / data-detectors / text substitutions** on the secret
+  and notes fields; **no recent-documents**; write no plaintext temp/diagnostic/cache
+  files; **`setrlimit(RLIMIT_CORE, 0)`**; keep dir `0700` / files `0600`. Gate = **no
+  durable plaintext after quit/crash** (and offline-at-unlock already fails closed). The
+  in-code `// Task 10` comments in `NotesEditorView.swift` / `AppModel.swift` mark the
+  spots. **Before implementing, read `app.md` §9 (no-durable-plaintext bullet), §10 step
+  12, and §11** (the no-durable-plaintext required test). Per the project's milestone
+  discipline, the user instigates Task 10.

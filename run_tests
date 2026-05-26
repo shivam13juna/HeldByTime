@@ -42,9 +42,12 @@ echo "== vault harness =="
 
 # ---- 1. Phase guard (Task-1 negative-scope retired at Task 2; forward guards kept) ----
 scope_ok=1
-# UI frameworks are not permitted until Task 9.
-if grep -rlE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' --include='*.swift' Sources Tools tests 2>/dev/null | grep -q .; then
-  emit FAIL scope/ui-import "SwiftUI/AppKit/Cocoa import found (forbidden before Task 9)"
+# UI frameworks are permitted ONLY in the Sources/VaultApp UI layer (Task 9+).
+# The engine core (VaultCore/Constants), tooling, and tests must stay SwiftUI-free
+# so the security logic remains headless and unit-testable; this guard still bites
+# everywhere except VaultApp.
+if grep -rlE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' --include='*.swift' --exclude-dir=VaultApp Sources Tools tests 2>/dev/null | grep -q .; then
+  emit FAIL scope/ui-import "SwiftUI/AppKit/Cocoa import found outside Sources/VaultApp (only the UI layer may import them)"
   scope_ok=0
 fi
 # No assembled .app bundle until Task 11.
@@ -172,7 +175,7 @@ fi
 if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
       Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
       tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift \
-      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/main.swift \
+      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/ui_suite.swift tests/main.swift \
       -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
       -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
   run_exec "$BUILD/vault_tests" tests
@@ -211,6 +214,23 @@ else
   dryrun_ok=0
 fi
 [ "$dryrun_ok" = 1 ] && emit PASS dryrun/release-gate
+
+# ---- 7c. UI layer type-checks against VaultCore + SwiftUI (Task 9) ----
+# SwiftUI views can't run headless and the .app isn't assembled until Task 11, so
+# the gate here is a full TYPE-CHECK: the Sources/VaultApp layer must compile
+# against the real engine APIs (FirstRunSetup / VaultStore / VaultSession) and
+# SwiftUI/AppKit. This catches UI↔engine wiring drift every run without producing
+# or executing a bundle. `-parse-as-library` is required because VaultApp.swift
+# uses the @main attribute.
+if swiftc -typecheck -parse-as-library \
+      Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+      Sources/VaultApp/*.swift Sources/VaultApp/Views/*.swift \
+      -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include 2> "$BUILD/ui-typecheck.log"; then
+  emit PASS ui/typecheck
+else
+  emit FAIL ui/typecheck "Sources/VaultApp failed to type-check (see build/ui-typecheck.log)"
+  sed 's/^/    /' "$BUILD/ui-typecheck.log"
+fi
 
 # ---- Aggregate ----
 echo
