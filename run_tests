@@ -50,9 +50,11 @@ if grep -rlE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' --include='
   emit FAIL scope/ui-import "SwiftUI/AppKit/Cocoa import found outside Sources/VaultApp (only the UI layer may import them)"
   scope_ok=0
 fi
-# No assembled .app bundle until Task 11.
-if find . -path ./.git -prune -o -name '*.app' -print 2>/dev/null | grep -q .; then
-  emit FAIL scope/app-bundle ".app bundle present (forbidden before Task 11)"
+# No assembled .app bundle in the COMMITTED source tree. From Task 11 the official
+# build.sh assembles one under build/ (gitignored, ephemeral), so that path is
+# excluded — but a .app anywhere in the tracked sources is still forbidden.
+if find . -path ./.git -prune -o -path ./build -prune -o -name '*.app' -print 2>/dev/null | grep -q .; then
+  emit FAIL scope/app-bundle ".app bundle present in the source tree (build artifacts belong under build/)"
   scope_ok=0
 fi
 [ "$scope_ok" = 1 ] && emit PASS scope/phase-guard
@@ -277,6 +279,54 @@ if grep -rnE '\b(print|debugPrint|NSLog|os_log)[[:space:]]*\(' --include='*.swif
   leak_ok=0
 fi
 [ "$leak_ok" = 1 ] && emit PASS leak/guard
+
+# ---- 7e. build.sh bundling-gate lint (Task 11; app.md §10 step 13, §11) ----
+# build.sh assembles + signs the .app and can't be run from inside the gate (it
+# RUNS this harness, and a full GUI build + codesign is not a fast headless check).
+# So this is a STATIC guard on the security-critical ORDERING + steps of build.sh;
+# the empirical proof is producing a real, codesign-verified bundle by running it.
+build_ok=1
+BS="build.sh"
+if [ ! -x "$BS" ]; then
+  emit FAIL build/script-present "build.sh missing or not executable"
+  build_ok=0
+else
+  # (a) GATE-FIRST: ./run_tests must appear before the first codesign invocation —
+  #     the bundle is never signed/assembled unless the harness passed.
+  gate_line=$(grep -nE '\./run_tests' "$BS" | head -1 | cut -d: -f1)
+  sign_line=$(grep -nE '^[[:space:]]*codesign' "$BS" | head -1 | cut -d: -f1)
+  if [ -z "$gate_line" ] || [ -z "$sign_line" ] || [ "$gate_line" -ge "$sign_line" ]; then
+    emit FAIL build/gate-first "build.sh must run ./run_tests before any codesign (gate=$gate_line sign=$sign_line)"
+    build_ok=0
+  fi
+  # (b) NESTED-FIRST: the embedded helper is signed before the bundle is sealed.
+  #     Both signing lines use `codesign --force`; the verify step uses --verify, so
+  #     it does not match. head -1 of each gives the signing line.
+  helper_sign=$(grep -nE '^[[:space:]]*codesign --force.*HELPERS_DIR/vaultseal' "$BS" | head -1 | cut -d: -f1)
+  bundle_sign=$(grep -nE '^[[:space:]]*codesign --force.*"\$APP"' "$BS" | head -1 | cut -d: -f1)
+  if [ -z "$helper_sign" ] || [ -z "$bundle_sign" ] || [ "$helper_sign" -ge "$bundle_sign" ]; then
+    emit FAIL build/nested-sign-first "build.sh must sign the nested helper before the bundle (helper=$helper_sign bundle=$bundle_sign)"
+    build_ok=0
+  fi
+  # (c) Required verification + release-surface steps are present.
+  for needle in 'codesign --verify --deep --strict' 'otool -L' "$DRYRUN_MARKER" 'shasum -a 256' 'plutil -lint'; do
+    if ! grep -qF "$needle" "$BS"; then
+      emit FAIL build/step-missing "build.sh is missing a required step: $needle"
+      build_ok=0
+    fi
+  done
+  # (d) The helper hash is compiled in (not a writable sidecar): the app must source
+  #     its expected hash from BundledHelper.sha256, and build.sh must inject it there.
+  if ! grep -qF 'BundledHelper.sha256' Sources/VaultApp/AppConfiguration.swift; then
+    emit FAIL build/hash-compiled-in "AppConfiguration must use BundledHelper.sha256 as the expected helper hash"
+    build_ok=0
+  fi
+  if ! grep -qF 'BundledHelper.swift' "$BS"; then
+    emit FAIL build/hash-injected "build.sh must inject the helper digest into BundledHelper.swift"
+    build_ok=0
+  fi
+fi
+[ "$build_ok" = 1 ] && emit PASS build/bundling-gate
 
 # ---- Aggregate ----
 echo
