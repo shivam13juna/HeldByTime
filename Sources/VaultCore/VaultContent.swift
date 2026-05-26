@@ -46,13 +46,12 @@ struct VaultContent: Codable, Equatable {
         self.secrets = secrets
     }
 
-    /// The first-run template: empty notes and the two app.md §2 secrets, ready
-    /// for the user to paste their values into during setup.
+    /// The first-run template: empty notes and a single blank secret row to
+    /// start from. The user labels it (e.g. "macOS admin password", "Canopy
+    /// password" per app.md §2) and adds as many more as they want — nothing
+    /// here is hard-coded to a specific secret.
     static var initialTemplate: VaultContent {
-        VaultContent(notes: "", secrets: [
-            VaultSecret(label: "macOS admin password"),
-            VaultSecret(label: "Canopy password"),
-        ])
+        VaultContent(notes: "", secrets: [VaultSecret(label: "")])
     }
 
     /// Serialize to the bytes PW01 seals. Deterministic (sorted keys). Throws
