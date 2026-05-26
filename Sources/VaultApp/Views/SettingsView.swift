@@ -26,6 +26,13 @@ struct SettingsView: View {
                 }
             }
 
+            if draft.windows.isEmpty {
+                Text("At least one window is required — there is no always-open mode. "
+                     + "Add a window to save.")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Button {
                 draft.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
             } label: { Label("Add window", systemImage: "plus") }
