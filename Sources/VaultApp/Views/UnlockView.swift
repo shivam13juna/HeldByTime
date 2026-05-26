@@ -17,10 +17,8 @@ struct UnlockView: View {
             Text("Enter your vault password to unlock.")
                 .foregroundStyle(.secondary)
 
-            SecureField("Vault password", text: $password)
-                .textFieldStyle(.roundedBorder)
+            RevealableSecureField(placeholder: "Vault password", text: $password, onSubmit: submit)
                 .frame(maxWidth: 300)
-                .onSubmit(submit)
 
             if let err = model.unlockError {
                 Text(err).font(.callout).foregroundStyle(.red)
