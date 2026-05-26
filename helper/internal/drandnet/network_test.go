@@ -200,6 +200,62 @@ func TestInfoSizeCapRejected(t *testing.T) {
 	}
 }
 
+func TestProbeEndpointsAllOK(t *testing.T) {
+	a := &mockServer{info: validInfo(), latest: 100}
+	b := &mockServer{info: validInfo(), latest: 200}
+	n := testNetwork(t, a.start(t), b.start(t))
+	got := n.ProbeEndpoints()
+	if len(got) != 2 {
+		t.Fatalf("got %d statuses, want 2", len(got))
+	}
+	for i, s := range got {
+		if !s.OK || s.Code != "" {
+			t.Fatalf("endpoint %d: got ok=%v code=%q, want ok with no code", i, s.OK, s.Code)
+		}
+	}
+	if got[0].Round != 100 || got[1].Round != 200 {
+		t.Fatalf("rounds = %d,%d; want 100,200 in compiled-in order", got[0].Round, got[1].Round)
+	}
+}
+
+func TestProbeEndpointsOneDownIsNonFatal(t *testing.T) {
+	// One endpoint serves a 500 on /info; the probe must still report the other
+	// as reachable rather than aborting (unlike VerifiedLatest's max path).
+	down := &mockServer{info: "", infoStatus: http.StatusInternalServerError}
+	good := &mockServer{info: validInfo(), latest: 777}
+	n := testNetwork(t, down.start(t), good.start(t))
+	got := n.ProbeEndpoints()
+	if len(got) != 2 {
+		t.Fatalf("got %d statuses, want 2", len(got))
+	}
+	if got[0].OK || got[0].Code != string(wire.Timeout) {
+		t.Fatalf("down endpoint: got ok=%v code=%q, want not-ok timeout", got[0].OK, got[0].Code)
+	}
+	if !got[1].OK || got[1].Round != 777 {
+		t.Fatalf("good endpoint: got ok=%v round=%d, want ok 777", got[1].OK, got[1].Round)
+	}
+}
+
+func TestProbeEndpointsChainMismatchReportedNotFatal(t *testing.T) {
+	// A forged chain on one endpoint is reported as code chain_mismatch on that
+	// endpoint WITHOUT aborting the whole probe (Swift policy treats any such
+	// code as a hard failure; the probe's job is to report, not decide).
+	forged := &mockServer{info: `{"public_key":"aabb","period":3,"genesis_time":1692803367,"hash":"` +
+		constants.DRAND_CHAIN_HASH + `","schemeID":"bls-unchained-g1-rfc9380"}`, latest: 999}
+	good := &mockServer{info: validInfo(), latest: 500}
+	n := testNetwork(t, forged.start(t), good.start(t))
+	got := n.ProbeEndpoints()
+	if len(got) != 2 {
+		t.Fatalf("got %d statuses, want 2", len(got))
+	}
+	if got[0].OK || got[0].Code != string(wire.ChainMismatch) {
+		t.Fatalf("forged endpoint: got ok=%v code=%q, want chain_mismatch", got[0].OK, got[0].Code)
+	}
+	if !got[1].OK {
+		t.Fatalf("good endpoint after a forged one: got ok=%v, want reachable", got[1].OK)
+	}
+}
+
 func TestExpectedRoundMath(t *testing.T) {
 	// Round 1 is published at genesis; round N at genesis+(N-1)*period.
 	genesis := time.Unix(int64(constants.DRAND_GENESIS_UNIX), 0)

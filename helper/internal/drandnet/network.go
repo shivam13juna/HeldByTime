@@ -188,6 +188,51 @@ func (n *Network) VerifiedLatest() (uint64, *wire.Error) {
 	return max, nil
 }
 
+// --- per-endpoint diagnostic probe (Task 8 self-test) -----------------------
+
+// EndpointStatus is one endpoint's independent reachability result. Unlike
+// VerifiedLatest (the hot path, which is fatal on any chain mismatch and returns
+// the max round), the probe is NON-FATAL per endpoint: it reports every
+// endpoint's state so the first-run self-test can show per-endpoint
+// reachability and apply its own policy (>=1 reachable = hard pass, warn unless
+// >=2). A forged chain is reported here as code "chain_mismatch" rather than
+// aborting the whole probe; the Swift policy treats any such code as a hard
+// failure. Codes are exactly the closed wire domain.
+type EndpointStatus struct {
+	Endpoint string `json:"endpoint"`     // the HTTP root probed
+	OK       bool   `json:"ok"`           // chain /info verified AND /public/latest fetched
+	Round    uint64 `json:"round"`        // verified latest from this endpoint (0 unless OK)
+	Code     string `json:"code"`         // "" when OK, else the closed wire code for the failure
+}
+
+// ProbeEndpoints reaches each compiled-in endpoint independently and reports its
+// reachability. An endpoint is OK only if its /info verifies against the
+// compiled-in chain AND its /public/latest is fetched. The probe never aborts on
+// one endpoint's failure; it always returns one status per endpoint, in
+// compiled-in order. It does not error: an all-down result is a successful probe
+// whose report says so.
+func (n *Network) ProbeEndpoints() []EndpointStatus {
+	out := make([]EndpointStatus, 0, len(n.endpoints))
+	for _, ep := range n.endpoints {
+		st := EndpointStatus{Endpoint: ep}
+		if cerr := n.verifyChainInfo(ep); cerr != nil {
+			st.Code = string(cerr.Code)
+			out = append(out, st)
+			continue
+		}
+		r, werr := n.fetchLatest(ep)
+		if werr != nil {
+			st.Code = string(werr.Code)
+			out = append(out, st)
+			continue
+		}
+		st.OK = true
+		st.Round = r
+		out = append(out, st)
+	}
+	return out
+}
+
 // --- HTTP plumbing ----------------------------------------------------------
 
 type roundResponse struct {

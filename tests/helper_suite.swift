@@ -245,19 +245,9 @@ private func subprocessTests() {
     hck("client/unseal-forwards",
         isSuccess(sealClient.unseal(sealed: Data("SEALED".utf8)), Data("SEALED".utf8)))
 
-    // --- SelfTestEngine skeleton ---
-    let engine = SelfTestEngine(client: VaultSealClient(runner: runner(cur, curSHA)))
-    let results = engine.run()
-    hck("selftest/step-count", results.count == SelfTestEngine.Step.allCases.count)
-    func stepPassed(_ rs: [SelfTestEngine.StepResult], _ s: SelfTestEngine.Step) -> Bool {
-        rs.first { $0.step == s }?.passed ?? false
-    }
-    hck("selftest/argon2-vector", stepPassed(results, .argon2Vector))
-    hck("selftest/helper-binary-valid", stepPassed(results, .helperBinaryValid))
-    hck("selftest/helper-responds", stepPassed(results, .helperResponds))
-
-    // Negative: a tampered helper fails the binary-integrity step (argon2 still passes).
-    let badEngine = SelfTestEngine(client: VaultSealClient(runner: runner(cur, [UInt8](repeating: 0, count: 32))))
-    let badResults = badEngine.run()
-    hck("selftest/tamper-fails-binary", !stepPassed(badResults, .helperBinaryValid) && stepPassed(badResults, .argon2Vector))
+    // SelfTestEngine + FirstRunSetup are exercised in setup_suite.swift against a
+    // fully-injected SelfTestServices (so the network/argon2 branches run offline
+    // and deterministically). The real-subprocess capabilities the engine
+    // orchestrates — binary integrity (preflight), current-round, seal, unseal —
+    // are integration-covered above via HelperRunner / VaultSealClient.
 }
