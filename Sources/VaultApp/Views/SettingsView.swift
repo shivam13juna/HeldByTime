@@ -48,7 +48,8 @@ struct SettingsView: View {
     }
 }
 
-/// A single editable window: start and end as hour/minute steppers.
+/// A single editable window: type the start/end hour and minute directly into
+/// two-digit boxes (no steppers). Each box clamps to its valid range.
 struct WindowEditorRow: View {
     @Binding var window: WindowPrefs
     let onDelete: () -> Void
@@ -67,11 +68,49 @@ struct WindowEditorRow: View {
     private func timeField(_ label: String, hour: Binding<Int>, minute: Binding<Int>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 2) {
-                Stepper(value: hour, in: 0...23) { Text(String(format: "%02d", hour.wrappedValue)) }
-                Text(":")
-                Stepper(value: minute, in: 0...59) { Text(String(format: "%02d", minute.wrappedValue)) }
+            HStack(spacing: 3) {
+                TimeNumberField(value: hour, range: 0...23, hint: "HH")
+                Text(":").font(.body.monospacedDigit())
+                TimeNumberField(value: minute, range: 0...59, hint: "MM")
             }
         }
     }
+}
+
+/// A two-digit numeric entry box for an hour or minute. The user types the value
+/// (digits only, max two); it is clamped to `range` live so a tap on Save always
+/// sees the latest value, and zero-padded for display when focus leaves. Replaces
+/// the up/down stepper.
+struct TimeNumberField: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    let hint: String
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField(hint, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.center)
+            .font(.body.monospacedDigit())
+            .frame(width: 46)
+            .focused($focused)
+            .onAppear { text = pad(value) }
+            .onChange(of: value) { _, newValue in
+                if !focused { text = pad(newValue) }     // external change (e.g. defaults on Add)
+            }
+            .onChange(of: text) { _, newText in
+                let digits = String(newText.filter(\.isNumber).prefix(2))
+                if digits != newText { text = digits; return }   // keep only ≤2 digits
+                if let n = Int(digits) {                          // clamp live so Save is current
+                    value = min(max(n, range.lowerBound), range.upperBound)
+                }
+            }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { text = pad(value) }       // tidy to two digits on blur
+            }
+            .onSubmit { text = pad(value) }
+    }
+
+    private func pad(_ n: Int) -> String { String(format: "%02d", n) }
 }
