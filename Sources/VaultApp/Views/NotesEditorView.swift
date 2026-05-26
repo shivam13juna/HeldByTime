@@ -69,15 +69,14 @@ struct NotesEditorView: View {
     }
 }
 
-/// One secret row: label + value. Editing always happens in a SecureField (the
-/// secure field editor masks input and disables spellcheck/data-detection by
-/// construction — app.md §9). Tapping the eye reveals a READ-ONLY plaintext echo
-/// so the value can be read without ever routing it through an unhardened,
-/// editable field. Reveal is per-row and resets when the view rebuilds.
+/// One secret row: label + value. The value uses RevealableSecureField: masked
+/// in a SecureField by default, and its eye toggle shows the cleartext in the
+/// hardened single-line NSTextView (never an unhardened TextField), so the value
+/// can be verified/read without a durable-plaintext surface (app.md §9). Reveal
+/// is per-row and resets when the view rebuilds.
 struct SecretRow: View {
     @Binding var secret: VaultSecret
     let onDelete: () -> Void
-    @State private var revealed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -90,26 +89,7 @@ struct SecretRow: View {
                 Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash") }
                     .help("Remove this secret")
             }
-            HStack {
-                SecureField("value", text: $secret.value)
-                    .textFieldStyle(.roundedBorder)
-                Button {
-                    revealed.toggle()
-                } label: {
-                    Image(systemName: revealed ? "eye.slash" : "eye")
-                }
-                .help(revealed ? "Hide" : "Reveal")
-            }
-            if revealed {
-                // Read-only echo (selectable so it can be copied deliberately —
-                // clipboard is an accepted out-of-scope surface, app.md §2).
-                Text(secret.value.isEmpty ? "—" : secret.value)
-                    .font(.body.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-            }
+            RevealableSecureField(placeholder: "value", text: $secret.value)
         }
         .padding(.vertical, 4)
     }
