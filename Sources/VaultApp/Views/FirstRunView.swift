@@ -197,7 +197,7 @@ struct FirstRunView: View {
                         } label: { Image(systemName: "trash") }
                             .help("Remove this secret")
                     }
-                    SecureField("value", text: $secret.value).textFieldStyle(.roundedBorder)
+                    RevealableSecureField(placeholder: "value", text: $secret.value)
                 }
             }
             Button {

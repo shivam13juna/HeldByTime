@@ -54,20 +54,33 @@ struct RevealableSecureField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if revealed {
-                HardenedTextEditor(text: $text, singleLine: true, onSubmit: onSubmit)
-                    .frame(height: 22)
-            } else {
-                SecureField(placeholder, text: $text)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(onSubmit)
+            // Both states are borderless and sit inside ONE SwiftUI-drawn box, so
+            // masked and revealed look identical (no native-bezel vs rounded
+            // mismatch). The revealed control is the hardened NSTextView, not a
+            // plain TextField — same no-leak guarantee in both states.
+            Group {
+                if revealed {
+                    HardenedTextEditor(text: $text, singleLine: true,
+                                       monospaced: false, bordered: false,
+                                       onSubmit: onSubmit)
+                        .frame(height: 17)
+                } else {
+                    SecureField(placeholder, text: $text)
+                        .textFieldStyle(.plain)
+                        .onSubmit(onSubmit)
+                }
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+
             Button { revealed.toggle() } label: {
                 Image(systemName: revealed ? "eye.slash" : "eye")
             }
             .buttonStyle(.plain)
-            .help(revealed ? "Hide password" : "Show password")
-            .accessibilityLabel(revealed ? "Hide password" : "Show password")
+            .help(revealed ? "Hide" : "Show")
+            .accessibilityLabel(revealed ? "Hide value" : "Show value")
         }
     }
 }
@@ -79,6 +92,9 @@ struct HardenedTextEditor: NSViewRepresentable {
     @Binding var text: String
     var singleLine = false
     var monospaced = true
+    /// When false, draw no native bezel/background so the field can sit inside a
+    /// caller-drawn container (used by RevealableSecureField for a uniform look).
+    var bordered = true
     /// In `singleLine` mode, Enter calls this instead of inserting a newline —
     /// lets the field act like a submit-on-return password field while keeping
     /// the hardened `NSTextView` (no unhardened SwiftUI `TextField`).
@@ -96,17 +112,19 @@ struct HardenedTextEditor: NSViewRepresentable {
         textView.font = monospaced
             ? .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             : .systemFont(ofSize: NSFont.systemFontSize)
-        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.textContainerInset = singleLine ? NSSize(width: 2, height: 2)
+                                                  : NSSize(width: 4, height: 6)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
+        textView.drawsBackground = bordered     // borderless: let the container show through
         textView.string = text
 
         let scroll = NSScrollView()
         scroll.documentView = textView
-        scroll.borderType = .bezelBorder
-        scroll.drawsBackground = true
+        scroll.borderType = bordered ? .bezelBorder : .noBorder
+        scroll.drawsBackground = bordered
         scroll.hasVerticalScroller = !singleLine
         scroll.hasHorizontalScroller = false
         return scroll
