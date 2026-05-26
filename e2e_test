@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# e2e_test — Task 12 (app.md §10 step 14, §11). The LIVE end-to-end test across a
+# real drand round boundary. Separate from ./run_tests on purpose: it needs the
+# network (Canopy must allow api.drand.sh) and a few minutes of real wall-clock
+# time, so it can't live inside the offline harness.
+#
+# It compiles `tests/e2e/main.swift` together with the real VaultCore engine (so
+# it drives the genuine internal APIs, not a copy) and runs it against the REAL
+# signed `vaultseal` helper. The harness's static `e2e/harness-gate` (run_tests
+# step 7f) is the offline regression fence for these files; this script is the
+# empirical proof, run by hand when online.
+#
+# Usage:  ./e2e_test            (uses build/dist/EncryptedVault.app's signed helper
+#                                if present, else builds an arm64 helper)
+#         ./e2e_test <helper>   (drive a specific helper binary)
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+BUILD="$ROOT/build"
+mkdir -p "$BUILD"
+say() { printf '\n== %s ==\n' "$*"; }
+die() { printf '\nE2E SETUP FAILED: %s\n' "$*" >&2; exit 1; }
+
+# ---- 1. Pick the helper to drive --------------------------------------------
+# Prefer the helper inside a freshly built .app (the exact bytes a user runs); the
+# E2E recomputes its hash and preflights it, so a stale copy fails the integrity
+# check rather than passing silently.
+if [ "$#" -ge 1 ]; then
+  HELPER="$1"
+elif [ -x "$BUILD/dist/EncryptedVault.app/Contents/Helpers/vaultseal" ]; then
+  HELPER="$BUILD/dist/EncryptedVault.app/Contents/Helpers/vaultseal"
+else
+  say "No bundled helper found — building an arm64 vaultseal"
+  ( cd helper && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+      go build -mod=vendor -trimpath -ldflags="-s -w" \
+        -o "$BUILD/vaultseal" ./cmd/vaultseal ) || die "helper build failed"
+  HELPER="$BUILD/vaultseal"
+fi
+[ -x "$HELPER" ] || die "helper is not executable: $HELPER"
+say "Helper: $HELPER"
+
+# ---- 2. Build the vendored Argon2id static lib (same recipe as run_tests/build.sh)
+say "Build Argon2id static lib"
+ACFLAGS="-O3 -Ivendor/argon2/include -Ivendor/argon2/src -ISources/CArgon2/include"
+ASRC="vendor/argon2/src/argon2.c vendor/argon2/src/core.c vendor/argon2/src/encoding.c \
+      vendor/argon2/src/ref.c vendor/argon2/src/thread.c vendor/argon2/src/blake2/blake2b.c \
+      Sources/CArgon2/shim.c"
+mkdir -p "$BUILD/aobj"
+for f in $ASRC; do
+  clang $ACFLAGS -c "$f" -o "$BUILD/aobj/$(basename "${f%.c}").o" || die "Argon2 C build failed: $f"
+done
+ar rcs "$BUILD/libargon2.a" "$BUILD"/aobj/*.o || die "Argon2 ar failed"
+
+# ---- 3. Compile the E2E binary against the real VaultCore engine -------------
+say "Compile build/e2e_live"
+swiftc -O \
+    Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+    tests/test_support.swift tests/e2e/main.swift \
+    -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
+    -L "$BUILD" -largon2 \
+    -o "$BUILD/e2e_live" || die "E2E binary failed to compile"
+
+# ---- 4. Run it live ----------------------------------------------------------
+say "Run the live E2E (this takes a few minutes — it crosses real drand rounds)"
+"$BUILD/e2e_live" "$HELPER"
+status=$?
+
+if [ "$status" -eq 0 ]; then
+  printf '\nOK — live E2E green. Now run the manual GUI checklist in E2E.md.\n'
+else
+  printf '\nFAILED — live E2E red (exit %s).\n' "$status" >&2
+fi
+exit "$status"

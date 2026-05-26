@@ -768,9 +768,62 @@ text-system / state-restoration pieces are type-checked + statically guarded; th
   ad-hoc signature, `Identifier=com.shivam.encryptedvault`, embedded == compiled-in hash
   `1a89b3…61d4`. A **live launch** is left to Task 12 (E2E across a real window boundary).
 
-**Task 12 — End-to-end test across a real window boundary.** Seal near-future → won't
-open early → opens at round → window-end re-seal → force-kill mid-window → defensive
-re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
+**Task 12 — End-to-end test across a real window boundary. ✅** `./run_tests` green
+(285 PASS / 0 FAIL — the +1 is the static `e2e/harness-gate`), and `./e2e_test` passes
+all 18 live legs against the REAL helper + REAL drand across two genuine quicknet round
+boundaries. This is the final task (app.md §10 step 14, §11). It has two halves, neither
+in the offline harness (which is offline by design):
+
+- **Automated live E2E — `tests/e2e/main.swift` + `./e2e_test`.** Compiles against the
+  REAL `VaultCore` engine (not a copy) and drives the REAL signed `vaultseal` helper
+  against REAL drand — NOT the offline `FakeSeal`. It recomputes the on-disk helper's
+  SHA-256 and preflights it (the live equivalent of `BundledHelper.sha256`). Throwaway
+  sentinel payload + scratch temp dirs only — never a real secret. Legs, all verified
+  live on this machine (rounds 29004488 / 29004534, quicknet 3 s period):
+  - `current-round` — the real helper reached drand and returned a verified round.
+  - `seal-near-future` + `locked-before-window` + `sealed-not-plaintext` — sealed ~90 s
+    out → `load()` is LOCKED (won't open early); the sentinel is ABSENT from the blob.
+  - `opens-at-round` + `decrypts-sentinel` + `wrong-password-failclosed` — opened exactly
+    when its round published; right password recovered the notes; wrong password →
+    `authError`, no partial plaintext.
+  - `interactive-reseal-forward` + `relocked-after-reseal` — `VaultSession.reseal`
+    (window-end trigger) moved protection FORWARD and re-locked both files.
+  - `seal-short-window` + `reached-expiry` + `defensive-reseal` + `defensive-forward` +
+    `relocked-after-defensive` — a vault whose committed window fully passed (the
+    force-kill-mid-window analogue) was defensively, PASSWORDLESSLY re-sealed forward on
+    the next `load()` (the store held NO password — passwordless by construction).
+  - `offline-failclosed` — the real helper, run directly behind a dead proxy
+    (`HTTPS_PROXY=http://127.0.0.1:1`, the way the Go hermetic tests black-hole the net,
+    because `HelperRunner` gives the child an empty env), failed closed: non-zero exit,
+    empty stdout, closed-domain JSON on stderr.
+  - `no-plaintext-interactive` + `no-plaintext-defensive` + `files-0600` — after every
+    write/re-seal the scratch vault files held only sealed bytes and were mode 0600.
+- **Manual GUI checklist — `E2E.md` + `Tools/scan_leak.sh`.** The first LIVE LAUNCH of
+  the built `.app` (double-click, first-run self-test, seal, quit-reseal, open across a
+  short test window, **force-kill mid-window** via `kill -9`, then `Tools/scan_leak.sh
+  <sentinel>` sweeps the real durable locations — vault dir, Saved Application State,
+  caches, prefs, crash reports, `$TMPDIR` — for a plaintext leak, relaunch → defensive
+  re-seal, offline test). These GUI behaviours can't run headless; the checklist is the
+  user's to drive, with a throwaway sentinel (NOT the real admin/Canopy passwords).
+- **Gate (`run_tests` step 7f, static — `e2e/harness-gate`):** like Task 11's
+  `build/bundling-gate`, a fence for a thing the offline harness can't run itself.
+  Asserts `e2e_test` + `Tools/scan_leak.sh` exist+executable, `tests/e2e/main.swift` +
+  `E2E.md` exist, the E2E drives the REAL `HelperRunner`/`VaultSealClient` and does NOT
+  instantiate `FakeSeal(`, still covers each required leg (`locked-before-window`,
+  `opens-at-round`, `interactive-reseal-forward`, `defensive-reseal`, `offline-failclosed`,
+  `no-plaintext`), and that `e2e_test` compiles it against `Sources/VaultCore`.
+- **Final §11 hardening review** is the sign-off table at the end of `E2E.md`: every
+  corner-case / required-test mapped to where it is enforced and what proves it (unit
+  suite, static gate, live E2E leg, or GUI checklist step). The honest ceiling is
+  restated unchanged: a strong wall against *impulsive* out-of-window access, NOT an
+  absolute cage against a *premeditated* owner during an open window (mitigated socially
+  by the sister's admin-password backup; code-signing + self-test are integrity checks,
+  not a commitment boundary).
+- **Honest scope of what `e2e_test` green proves:** the ENGINE live path is verified
+  end-to-end against real drand. The GUI-only behaviours (state restoration, editor
+  caches, a real process force-kill) and a system-wide durable-plaintext scan are the
+  `E2E.md` checklist's job; `load()`'s offline→`.offline` mapping is unit-proven in
+  `store_suite` (`FakeSeal`), while the real binary's offline fail-closed is proven live.
 
 > The harness must stay green at every task boundary. New gates are added per task; none
 > are ever removed. Any fail-open discovered at any point is a release blocker.
@@ -778,8 +831,9 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1–11: **complete, `./run_tests` green (284 checks);** `./build.sh` produces a
-  `codesign --verify --deep --strict`-valid `EncryptedVault.app`.
+- **ALL 12 tasks complete.** `./run_tests` green (**285 checks**); `./build.sh` produces a
+  `codesign --verify --deep --strict`-valid `EncryptedVault.app`; `./e2e_test` passes all
+  18 live legs against the real helper + real drand across genuine round boundaries.
 - The official build path now exists: `./build.sh` gates on the harness, builds + signs the
   arm64 helper, **compiles in the signed helper's real SHA-256** (so a *bundled* app no
   longer fail-closes at preflight — the committed source still does, by design), compiles
@@ -792,14 +846,14 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
   the hardened `NSTextView` editor, secrets via `SecureField` + read-only reveal,
   Saved-App-State / window restoration off, and the step-7d static leak guard (incl. a
   no-`print`/`NSLog`/`os_log` ban on the engine/UI).
-- **Honest scope of what "green + a signed .app" proves:** the bundle is assembled, signed,
-  and integrity-verified, and the compiled-in helper hash matches the shipped helper. It
-  does **not** yet prove the app *runs* correctly end-to-end, nor the runtime "no durable
-  plaintext after force-kill" assertion — both are **Task 12** (a live launch across a real
-  window boundary). No real secret has been stored.
-- Next: **Task 12 — End-to-end test across a real window boundary.** Seal near-future → won't
-  open early → opens at round → window-end re-seal → **force-kill mid-window** → defensive
-  re-seal closes the gap → **offline-at-unlock fails closed** → and the empirical
-  no-durable-plaintext (force-kill + scan disk) assertion → final §11 review. **Before
-  implementing, read `app.md` §10 step 14 and §11.** Per the project's milestone discipline,
-  the user instigates Task 12.
+- The live ENGINE path is now proven end-to-end against real drand (`./e2e_test`, 18 legs):
+  seal won't-open-early, opens-at-round + decrypt, wrong-password fail-closed, interactive
+  and passwordless-defensive re-seal both forward-only, real-helper-offline fail-closed, and
+  no plaintext sentinel on disk (files 0600). No real secret was stored — throwaway sentinel.
+- **What remains is the user's, not code:** the `E2E.md` manual GUI checklist (the first
+  live double-click launch, force-kill mid-window, `Tools/scan_leak.sh` system-wide leak
+  sweep, offline test) and — once that is green — replacing the throwaway sentinel with the
+  real macOS-admin + Canopy passwords. **Reminder:** Canopy MUST whitelist `api.drand.sh`
+  or the vault deadlocks; forgetting the master password = permanent loss by design.
+- The build is feature-complete and verified for real use pending the GUI checklist. There
+  is no Task 13 — Task 12 was the last.

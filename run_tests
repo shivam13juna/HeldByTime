@@ -328,6 +328,48 @@ else
 fi
 [ "$build_ok" = 1 ] && emit PASS build/bundling-gate
 
+# ---- 7f. Live E2E harness-gate lint (Task 12; app.md §10 step 14, §11) ----
+# The live E2E (./e2e_test) needs the network + minutes of real time, so it can't
+# run inside this offline harness. This is the STATIC fence that its deliverables
+# exist and still cover the required legs against the REAL helper (not FakeSeal);
+# the empirical proof is running ./e2e_test online + the GUI checklist in E2E.md.
+e2e_ok=1
+E2E_MAIN="tests/e2e/main.swift"
+for f in e2e_test Tools/scan_leak.sh; do
+  if [ ! -x "$f" ]; then emit FAIL e2e/script-present "$f missing or not executable"; e2e_ok=0; fi
+done
+for f in "$E2E_MAIN" E2E.md; do
+  if [ ! -f "$f" ]; then emit FAIL e2e/file-present "$f missing"; e2e_ok=0; fi
+done
+if [ -f "$E2E_MAIN" ]; then
+  # (a) Drives the REAL helper path — HelperRunner + VaultSealClient — and must NOT
+  #     fall back to the offline FakeSeal (that would make "live" a lie).
+  if ! grep -qF 'HelperRunner(' "$E2E_MAIN" || ! grep -qF 'VaultSealClient(' "$E2E_MAIN"; then
+    emit FAIL e2e/real-helper "$E2E_MAIN must drive the real HelperRunner/VaultSealClient"
+    e2e_ok=0
+  fi
+  if grep -qF 'FakeSeal(' "$E2E_MAIN"; then
+    emit FAIL e2e/no-fakeseal "$E2E_MAIN must not instantiate FakeSeal — the E2E is the LIVE path"
+    e2e_ok=0
+  fi
+  # (b) Still covers each required leg (the RESULT names the checklist depends on).
+  for needle in 'e2e/locked-before-window' 'e2e/opens-at-round' 'e2e/interactive-reseal-forward' \
+                'e2e/defensive-reseal' 'e2e/offline-failclosed' 'e2e/no-plaintext'; do
+    if ! grep -qF "$needle" "$E2E_MAIN"; then
+      emit FAIL e2e/leg-missing "$E2E_MAIN no longer covers leg: $needle"
+      e2e_ok=0
+    fi
+  done
+fi
+# (c) The runner compiles the E2E against the REAL engine (not a stub copy).
+if [ -f e2e_test ]; then
+  if ! grep -qF 'Sources/VaultCore/*.swift' e2e_test || ! grep -qF "$E2E_MAIN" e2e_test; then
+    emit FAIL e2e/runner-wires-engine "e2e_test must compile $E2E_MAIN with Sources/VaultCore"
+    e2e_ok=0
+  fi
+fi
+[ "$e2e_ok" = 1 ] && emit PASS e2e/harness-gate
+
 # ---- Aggregate ----
 echo
 echo "== Summary =="
