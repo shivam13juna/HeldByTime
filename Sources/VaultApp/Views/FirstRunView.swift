@@ -157,6 +157,7 @@ struct FirstRunView: View {
 
     private var canCreate: Bool {
         !setup.password.isEmpty && setup.passwordsMatch && setup.acknowledgeDataLoss
+            && !setup.prefs.windows.isEmpty   // a time-lock vault must seal to a window
     }
 
     private var warningAlertBinding: Binding<Bool> {
@@ -209,10 +210,18 @@ struct FirstRunView: View {
     private var windowsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Daily windows").font(.title3).bold()
+            Text("The vault time-locks to a window and can only be opened inside one. "
+                 + "At least one window is required — there is no always-open mode.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach($setup.prefs.windows) { $w in
                 WindowEditorRow(window: $w) {
                     setup.prefs.windows.removeAll { $0.id == w.id }
                 }
+            }
+            if setup.prefs.windows.isEmpty {
+                Text("Add at least one window to create the vault.")
+                    .font(.caption).foregroundStyle(.orange)
             }
             Button {
                 setup.prefs.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
