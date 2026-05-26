@@ -182,14 +182,27 @@ struct FirstRunView: View {
     private var secretsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Initial secrets").font(.title3).bold()
-            Text("You can paste these now or leave them blank and add them later.")
+            Text("Label each secret and paste its value, or leave them blank and "
+                 + "add more later. You can add as many as you want.")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach($setup.content.secrets) { $secret in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(secret.label).font(.callout).foregroundStyle(.secondary)
-                    SecureField(secret.label, text: $secret.value).textFieldStyle(.roundedBorder)
+                    HStack {
+                        TextField("Label (e.g. macOS admin password)", text: $secret.label)
+                            .textFieldStyle(.plain).font(.callout).foregroundStyle(.secondary)
+                            .autocorrectionDisabled()
+                        Spacer()
+                        Button(role: .destructive) {
+                            setup.content.secrets.removeAll { $0.id == secret.id }
+                        } label: { Image(systemName: "trash") }
+                            .help("Remove this secret")
+                    }
+                    SecureField("value", text: $secret.value).textFieldStyle(.roundedBorder)
                 }
             }
+            Button {
+                setup.content.secrets.append(VaultSecret(label: ""))
+            } label: { Label("Add secret", systemImage: "plus") }
         }
     }
 
@@ -209,10 +222,10 @@ struct FirstRunView: View {
 
     private var dataLossSection: some View {
         Toggle(isOn: $setup.acknowledgeDataLoss) {
-            Text("I understand: if I forget this password the vault's contents — including "
-                 + "the macOS admin and Canopy passwords — are lost forever, and the vault "
-                 + "must not be placed in Time Machine, an iCloud/Dropbox folder, or any synced "
-                 + "location, or it can become openable out of window.")
+            Text("I understand: if I forget this password the vault's contents are lost "
+                 + "forever, and the vault must not be placed in Time Machine, an "
+                 + "iCloud/Dropbox folder, or any synced location, or it can become "
+                 + "openable out of window.")
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
     }

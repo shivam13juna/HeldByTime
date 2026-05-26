@@ -49,10 +49,12 @@ struct NotesEditorView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Secrets").font(.title3).bold()
             ForEach($model.content.secrets) { $secret in
-                SecretRow(secret: $secret)
+                SecretRow(secret: $secret) {
+                    model.content.secrets.removeAll { $0.id == secret.id }
+                }
             }
             Button {
-                model.content.secrets.append(VaultSecret(label: "New secret"))
+                model.content.secrets.append(VaultSecret(label: ""))
             } label: { Label("Add secret", systemImage: "plus") }
         }
     }
@@ -74,14 +76,20 @@ struct NotesEditorView: View {
 /// editable field. Reveal is per-row and resets when the view rebuilds.
 struct SecretRow: View {
     @Binding var secret: VaultSecret
+    let onDelete: () -> Void
     @State private var revealed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            TextField("Label", text: $secret.label)
-                .font(.callout).foregroundStyle(.secondary)
-                .textFieldStyle(.plain)
-                .autocorrectionDisabled()
+            HStack {
+                TextField("Label", text: $secret.label)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                Spacer()
+                Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash") }
+                    .help("Remove this secret")
+            }
             HStack {
                 SecureField("value", text: $secret.value)
                     .textFieldStyle(.roundedBorder)

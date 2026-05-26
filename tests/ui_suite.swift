@@ -28,6 +28,18 @@ private func vaultContentTests() {
         fail("ui/content-roundtrip", "threw \(error)")
     }
 
+    // An arbitrary number of arbitrarily-labelled secrets survives the round-trip
+    // — nothing in the model is fixed to two named fields.
+    do {
+        let many = VaultContent(notes: "n", secrets: (0..<7).map {
+            VaultSecret(label: "secret #\($0)", value: "v\($0)")
+        })
+        let back = try VaultContent.decode(try many.encode())
+        check("ui/content-many-secrets", back == many && back.secrets.count == 7)
+    } catch {
+        fail("ui/content-many-secrets", "threw \(error)")
+    }
+
     // Empty content is valid (FORMAT.md: empty notes JSON is allowed) and stable.
     do {
         let empty = VaultContent()
@@ -70,10 +82,11 @@ private func vaultContentTests() {
     check("ui/secret-mask-fixed-width", secret.masked == longSecret.masked, "mask leaks length")
     check("ui/secret-mask-empty", VaultSecret(label: "z", value: "").masked == "—")
 
-    // The first-run template carries the two app.md §2 secrets, empty.
+    // The first-run template seeds a single blank, unlabelled secret row — no
+    // secret name is hard-coded; the user labels and adds the rest.
     let t = VaultContent.initialTemplate
-    check("ui/content-template", t.notes.isEmpty && t.secrets.count == 2
-          && t.secrets.allSatisfy { $0.value.isEmpty })
+    check("ui/content-template", t.notes.isEmpty && t.secrets.count == 1
+          && t.secrets.allSatisfy { $0.value.isEmpty && $0.label.isEmpty })
 }
 
 // MARK: - LockScreen presentation mapper
