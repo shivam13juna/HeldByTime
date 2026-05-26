@@ -278,6 +278,19 @@ if grep -rnE '\b(print|debugPrint|NSLog|os_log)[[:space:]]*\(' --include='*.swif
       Sources/VaultCore Sources/VaultApp 2>/dev/null | grep -v '/DryRun.swift' | sed 's/^/    /'
   leak_ok=0
 fi
+# (f) The password reveal must stay hardened: RevealableSecureField's shown state
+#     uses the hardened HardenedTextEditor, never a bare SwiftUI TextField (which
+#     would route the cleartext password through the unhardened field editor).
+#     SecureField/HardenedTextEditor don't contain the substring "TextField(", so
+#     any bare TextField( in HardenedText.swift is a regression of this property.
+if grep -qE '\bTextField\(' "$HARD" 2>/dev/null; then
+  emit FAIL leak/reveal-hardening "bare TextField( in $(basename "$HARD") — the reveal field must keep its shown state on HardenedTextEditor (no unhardened field editor for the password)"
+  leak_ok=0
+fi
+if ! grep -q 'HardenedTextEditor(text:' "$HARD" 2>/dev/null; then
+  emit FAIL leak/reveal-hardening "RevealableSecureField no longer routes its revealed state through HardenedTextEditor"
+  leak_ok=0
+fi
 [ "$leak_ok" = 1 ] && emit PASS leak/guard
 
 # ---- 7e. build.sh bundling-gate lint (Task 11; app.md §10 step 13, §11) ----

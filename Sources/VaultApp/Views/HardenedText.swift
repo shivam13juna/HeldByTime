@@ -39,6 +39,39 @@ extension NSTextView {
     }
 }
 
+/// A password field with a reveal (eye) toggle. Masked uses SwiftUI
+/// `SecureField` (NSSecureTextField); revealed swaps to the hardened single-line
+/// `HardenedTextEditor` above — NEVER an unhardened SwiftUI `TextField`. So
+/// showing the cleartext adds no durable-plaintext surface (spellcheck,
+/// autocorrect-learning and undo persistence stay disabled in both states),
+/// preserving Task 10 / app.md §9 while still letting the user verify what they
+/// typed. Reveal state is local and resets when the view is rebuilt.
+struct RevealableSecureField: View {
+    let placeholder: String
+    @Binding var text: String
+    var onSubmit: () -> Void = {}
+    @State private var revealed = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if revealed {
+                HardenedTextEditor(text: $text, singleLine: true, onSubmit: onSubmit)
+                    .frame(height: 22)
+            } else {
+                SecureField(placeholder, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(onSubmit)
+            }
+            Button { revealed.toggle() } label: {
+                Image(systemName: revealed ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.plain)
+            .help(revealed ? "Hide password" : "Show password")
+            .accessibilityLabel(revealed ? "Hide password" : "Show password")
+        }
+    }
+}
+
 /// A plain-text editor backed by a hardened `NSTextView`. Two-way bound to a
 /// `String`. Multiline by default; `singleLine` gives a one-row field for short
 /// values without the autocorrect/undo surface a SwiftUI `TextField` carries.
@@ -46,8 +79,12 @@ struct HardenedTextEditor: NSViewRepresentable {
     @Binding var text: String
     var singleLine = false
     var monospaced = true
+    /// In `singleLine` mode, Enter calls this instead of inserting a newline —
+    /// lets the field act like a submit-on-return password field while keeping
+    /// the hardened `NSTextView` (no unhardened SwiftUI `TextField`).
+    var onSubmit: () -> Void = {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text, singleLine: singleLine, onSubmit: onSubmit) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = NSTextView()
@@ -85,11 +122,28 @@ struct HardenedTextEditor: NSViewRepresentable {
     /// the text beyond the binding itself.
     final class Coordinator: NSObject, NSTextViewDelegate {
         private let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        private let singleLine: Bool
+        private let onSubmit: () -> Void
+        init(text: Binding<String>, singleLine: Bool, onSubmit: @escaping () -> Void) {
+            self.text = text; self.singleLine = singleLine; self.onSubmit = onSubmit
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            text.wrappedValue = textView.string
+            // In single-line mode a password can't contain a newline; strip any
+            // (e.g. a pasted trailing newline) so the bound value stays clean.
+            text.wrappedValue = singleLine
+                ? textView.string.replacingOccurrences(of: "\n", with: "")
+                : textView.string
+        }
+
+        /// Single-line Enter → submit instead of inserting a newline.
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if singleLine && selector == #selector(NSResponder.insertNewline(_:)) {
+                onSubmit()
+                return true
+            }
+            return false
         }
     }
 }

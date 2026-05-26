@@ -167,8 +167,8 @@ struct FirstRunView: View {
     private var passwordSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Vault password").font(.title3).bold()
-            SecureField("Password", text: $setup.password).textFieldStyle(.roundedBorder)
-            SecureField("Confirm password", text: $setup.confirmPassword).textFieldStyle(.roundedBorder)
+            RevealableSecureField(placeholder: "Password", text: $setup.password)
+            RevealableSecureField(placeholder: "Confirm password", text: $setup.confirmPassword)
             if !setup.confirmPassword.isEmpty && !setup.passwordsMatch {
                 Text("Passwords don't match.").font(.caption).foregroundStyle(.red)
             }
