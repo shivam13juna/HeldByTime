@@ -12,8 +12,10 @@
 // the wiring is kept synchronous and obviously correct rather than concurrent.
 //
 // No secret is logged or persisted in plaintext here; in-memory copies during an
-// open session are the accepted ceiling (app.md §11). The Task 10 leakage pass
-// hardens the editor's text system on top of this.
+// open session are the accepted ceiling (app.md §11). Task 10 (no durable
+// plaintext): core dumps are disabled at construction (idempotent with the app
+// delegate's earlier call), the editor's text system is hardened in
+// HardenedText.swift, and state restoration is off in the delegate.
 
 import Foundation
 import Combine
@@ -41,6 +43,7 @@ final class AppModel: ObservableObject {
     private let config: AppConfiguration
 
     init(config: AppConfiguration = .live) {
+        ProcessHardening.disableCoreDumps()   // no core file can hold decrypted secrets
         self.config = config
         self.schedulePrefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
     }

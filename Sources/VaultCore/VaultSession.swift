@@ -42,8 +42,11 @@ struct VaultSession {
     let store: VaultStore
     /// The exact password bytes the user entered (UTF-8, no normalization — see
     /// FORMAT.md §7). Retained ONLY in memory while the vault is open so each
-    /// re-seal can re-derive the key under a fresh salt. (Durable-plaintext /
-    /// secure-wipe hardening is Task 10; in-memory residue is root-owned, §11.)
+    /// re-seal can re-derive the key under a fresh salt. (Task 10 hardens the
+    /// DURABLE leak surfaces — core dumps, state restoration, editor caches; the
+    /// in-memory String residue during an open session is the accepted ceiling,
+    /// out of scope per app.md §9/§11 since the standard account blocks swap /
+    /// other-process reads. No secure-wipe is attempted.)
     private let password: [UInt8]
     /// The window we opened under, read from the manifest (the authoritative
     /// source — never the mutable schedule). Drives window-end detection.

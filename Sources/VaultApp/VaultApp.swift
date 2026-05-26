@@ -1,9 +1,13 @@
-// VaultApp.swift — Task 9: the SwiftUI app shell (@main). Routes the AppModel's
-// phase to the right screen and seals the vault on a graceful quit (Cmd-Q / menu
-// Quit) via the AppKit application delegate — one of app.md §2's four re-seal
-// triggers. The window is fixed-size and single; there is no document model,
-// no recent-documents, and no extra scenes (those would be plaintext-leak
-// surfaces the Task 10 pass also guards).
+// VaultApp.swift — the SwiftUI app shell (@main). Routes the AppModel's phase to
+// the right screen and seals the vault on a graceful quit (Cmd-Q / menu Quit) via
+// the AppKit application delegate — one of app.md §2's four re-seal triggers. The
+// window is fixed-size and single; there is no document model and no
+// recent-documents (NSDocument architecture is never used), so nothing populates
+// a recents list or autosaves a document.
+//
+// Task 10 (no durable plaintext, app.md §9 / I13): the delegate disables Saved
+// Application State / window restoration (which can persist editor contents
+// across launches) and process core dumps at the earliest launch hook.
 
 import SwiftUI
 import AppKit
@@ -33,6 +37,25 @@ struct VaultApp: App {
 /// session before the process exits; if nothing is open it terminates at once.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+
+    /// Earliest launch hook: kill the durable-plaintext leak surfaces before any
+    /// secret can exist in memory (app.md §9 / I13).
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        ProcessHardening.disableCoreDumps()
+        // Disable Saved Application State / window restoration — it can persist
+        // editor contents to ~/Library/Saved Application State across launches.
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Belt-and-suspenders: mark every window non-restorable too.
+        for window in NSApplication.shared.windows { window.isRestorable = false }
+    }
+
+    /// We never participate in state restoration, so report no support (and the
+    /// windows above are non-restorable regardless).
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }

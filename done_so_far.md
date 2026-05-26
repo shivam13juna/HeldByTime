@@ -52,6 +52,14 @@ numbers match the `# ----` comments in `run_tests`:
 7c. **UI type-check** (Task 9) — `swiftc -typecheck -parse-as-library` of Constants +
    VaultCore + `Sources/VaultApp/**` against SwiftUI; the UI must compile against the real
    engine APIs. No bundle is produced or run (that is Task 11).
+7d. **No-durable-plaintext leak guard** (Task 10) — static guard for the AppKit/UI leak
+   surfaces that can't run headless: no SwiftUI `TextEditor(` in VaultApp (must use the
+   hardened wrapper); `HardenedText.swift` disables all ten text-intelligence/undo flags;
+   `setrlimit(RLIMIT_CORE` present; Saved-App-State off (`NSQuitAlwaysKeepsWindows`); and
+   **no `print`/`NSLog`/`os_log` in the engine/UI** (only the DEBUG-only DryRun stderr is
+   allowed). The OS-level core-dump disable is *also* unit-tested in step 7 (real getrlimit
+   readback). Proven non-vacuous (injected a `print`, a re-enabled flag, and a real
+   `TextEditor` — each tripped, then reverted).
 
 **Aggregation rule:** exit 0 only if zero `FAIL` lines and zero un-allowlisted `SKIP`
 lines (`tests/skip-allowlist.txt`). `RESULT: INFO` lines are informational (e.g. the
@@ -115,6 +123,7 @@ Sources/
     FirstRunSetup.swift          (Task 8) the gated create-vault flow (engine; no SwiftUI)
     VaultContent.swift           (Task 9) structured plaintext model (notes + masked secrets); JSON encode/decode
     LockScreen.swift             (Task 9) pure VaultLoadResult→LockScreenInfo mapper (canPrompt = openWindow only)
+    ProcessHardening.swift       (Task 10) disableCoreDumps() = setrlimit(RLIMIT_CORE,0) + getrlimit readback (unit-tested)
   VaultApp/                      ★ (Task 9) the SwiftUI layer — the ONLY dir allowed to import SwiftUI/AppKit
     VaultApp.swift               @main App + NSApplicationDelegate (re-seal on graceful quit) + RootView phase switch
     AppModel.swift               ObservableObject coordinator (bootstrap/unlock/lock/sealForQuit) — thin glue to engines
@@ -124,6 +133,7 @@ Sources/
     Views/NotesEditorView.swift  notes + masked/reveal-on-tap secret rows + Lock button
     Views/SettingsView.swift     daily-windows editor (sheet)
     Views/FirstRunView.swift     setup flow + FirstRunModel (drives FirstRunSetup + self-test report)
+    Views/HardenedText.swift     (Task 10) NSTextView wrapper: spellcheck/grammar/autocorrect/data+link-detect/substitution/undo all OFF
 Tools/
   constdump-swift/main.swift     emits Swift constants as JSON (consistency test)
 helper/                          ★ Go module "vaultseal" (go 1.26) — the drand-facing helper
@@ -149,6 +159,7 @@ tests/
   session_suite.swift            runSessionSuite() — Task 7 tests (reuses FakeSeal)
   setup_suite.swift              runSetupSuite()   — Task 8 tests (PasswordPolicy + self-test + first-run, offline)
   ui_suite.swift                 runUISuite()      — Task 9 tests (VaultContent + LockScreen + round→time)
+  hardening_suite.swift          runHardeningSuite()— Task 10 tests (core-dump RLIMIT_CORE=0 setrlimit/getrlimit readback)
   main.swift                     entry point: runs all suites
   skip-allowlist.txt             allowed SKIP names (currently none)
 build/                           generated; gitignored
@@ -683,12 +694,41 @@ a full **type-check** against the real engine APIs):
   10 no-durable-plaintext pass will harden (NSTextView wrapper, spellcheck/data-detector
   off, `RLIMIT_CORE=0`). In-code comments mark where that hardening lands.
 
-**Task 10 — No-durable-plaintext-leakage pass.** No logging of secrets; state
-restoration / autosave / undo persistence off; spellcheck/grammar/data-detectors/
-substitutions off on secret fields; no recent-documents; no plaintext temp/cache/diag
-files; core dumps off (`RLIMIT_CORE=0`); `0700`/`0600`; custom `NSTextView` wrapper if
-`TextEditor` can't be locked down. Scope = no durable plaintext after quit/crash. Gate:
-offline-at-unlock → fail closed.
+**Task 10 — No-durable-plaintext-leakage pass. ✅** `./run_tests` green (283 PASS / 0
+FAIL). Installs and statically+unit-verifies the I13 leak-surface defenses (app.md §9).
+The honest split (the gate is "no durable plaintext after quit/crash", which is AppKit
+behaviour that can't run headless): the OS-level piece is unit-tested for real; the
+text-system / state-restoration pieces are type-checked + statically guarded; the full
+"force-kill then scan disk" assertion is exercised in **Task 12**'s E2E.
+- **`Sources/VaultCore/ProcessHardening.swift`** (runnable, unit-tested) —
+  `disableCoreDumps()` drops `RLIMIT_CORE` to 0/0 via `setrlimit` (a core file of a
+  process holding the decrypted notes/key/password would be durable plaintext). Called
+  from both `AppModel.init` and the app delegate's earliest launch hook. `hardening_suite`
+  proves it with a real `getrlimit` readback (cur==0 && max==0, idempotent, can't re-raise).
+- **`Sources/VaultApp/Views/HardenedText.swift`** (type-check-gated) — an
+  `NSViewRepresentable` over a raw `NSTextView`, because SwiftUI's `TextEditor` cannot
+  disable the macOS text-intelligence services. `applyVaultHardening()` turns OFF
+  continuous spellcheck, grammar, autocorrect, data + link detection, text/quote/dash
+  substitution, smart insert/delete, **undo persistence (`allowsUndo = false`)**, rich
+  text/graphics import, and the font panel — re-asserted on every `updateNSView`.
+- **`NotesEditorView` reworked** — notes use `HardenedTextEditor`; secret VALUES are
+  entered through `SecureField` (the secure field editor disables those same services by
+  construction + enables secure event input), and **reveal-on-tap is a READ-ONLY plaintext
+  echo** (selectable), never an unhardened editable field.
+- **`VaultApp` app delegate** — disables Saved Application State / window restoration
+  (`NSQuitAlwaysKeepsWindows=false`, every window `isRestorable=false`,
+  `applicationSupportsSecureRestorableState→false`), `allowsAutomaticWindowTabbing=false`,
+  and calls `disableCoreDumps()` in `applicationWillFinishLaunching`. No `NSDocument`
+  architecture is used, so there is no recent-documents list and no document autosave.
+- **dir `0700` / files `0600`** stay enforced by `SecureFile`/`VaultStore` (Task 6),
+  unchanged; the only non-sealed file written is the non-secret `schedule.json`.
+- **Gate (`run_tests` step 7d, static):** no `TextEditor(` in VaultApp; all ten hardening
+  flags off in `HardenedText.swift`; `setrlimit(RLIMIT_CORE` present; Saved-App-State off;
+  **no `print`/`NSLog`/`os_log` anywhere in engine/UI** (only the DEBUG-only DryRun stderr
+  writer is allowed). Proven non-vacuous by injecting a `print`, a re-enabled flag, and a
+  real `TextEditor` — each tripped, then reverted.
+- **No Task 11 work pulled forward:** the helper hash is still EMPTY (preflight fail-closed)
+  and no bundle is assembled.
 
 **Task 11 — `.app` bundling + signing.** `build.sh` **runs the gate tests first and
 refuses to assemble/sign if any are red** → `go build -mod=vendor` helper (arm64) →
@@ -707,7 +747,7 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1–9: **complete, `./run_tests` green (277 checks).**
+- Tasks 1–10: **complete, `./run_tests` green (283 checks).**
 - The SwiftUI app shell now exists in `Sources/VaultApp/` and type-checks against the
   engines, but there is **still no `.app` and no real secrets** — the bundle isn't
   assembled until Task 11, and `AppConfiguration.compiledHelperSHA256` defaults to EMPTY
@@ -716,14 +756,19 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
   is thin glue: `bootstrap`→`VaultStore.load()` for locked/open, `VaultSession.open`/
   `reseal` for the session + its triggers (Lock / Cmd-Q / window-end), and
   `FirstRunSetup` for onboarding.
-- Next: **Task 10 — No-durable-plaintext-leakage pass.** Replace the editor's standard
-  `TextEditor`/`SecureField` with a hardened **`NSTextView` (`NSViewRepresentable`)**
-  wrapper if needed; turn **state restoration / autosave / undo persistence OFF**;
-  disable **spellcheck / grammar / data-detectors / text substitutions** on the secret
-  and notes fields; **no recent-documents**; write no plaintext temp/diagnostic/cache
-  files; **`setrlimit(RLIMIT_CORE, 0)`**; keep dir `0700` / files `0600`. Gate = **no
-  durable plaintext after quit/crash** (and offline-at-unlock already fails closed). The
-  in-code `// Task 10` comments in `NotesEditorView.swift` / `AppModel.swift` mark the
-  spots. **Before implementing, read `app.md` §9 (no-durable-plaintext bullet), §10 step
-  12, and §11** (the no-durable-plaintext required test). Per the project's milestone
-  discipline, the user instigates Task 10.
+- The no-durable-plaintext defenses (Task 10) are now installed: core dumps off
+  (unit-tested), the hardened `NSTextView` editor, secrets via `SecureField` + read-only
+  reveal, Saved-App-State / window restoration off, and the step-7d static leak guard
+  (incl. a no-`print`/`NSLog`/`os_log` ban on the engine/UI). The runtime "no durable
+  plaintext after force-kill" assertion itself is deferred to Task 12's E2E (it needs the
+  real running `.app`).
+- Next: **Task 11 — `.app` bundling + signing (build-gated on tests).** `build.sh` **runs
+  the gate tests first and refuses to assemble/sign if any are red** → `go build
+  -mod=vendor` helper (arm64) → `swiftc` → assemble `.app` (Info.plist, no CLI/URL
+  surface) → **release build fails if any `DEBUG` dry-run symbol/flag is present** → sign
+  the nested `vaultseal` FIRST, then ad-hoc sign the bundle → verify `codesign --verify
+  --deep --strict`, `otool -L`, `file`, Finder double-click. **Crucially, compile in the
+  real `vaultseal` SHA-256** so `AppConfiguration.compiledHelperSHA256` is no longer EMPTY
+  (today it is empty by design → preflight fail-closed). **Before implementing, read
+  `app.md` §10 steps 13–14 and §11.** Per the project's milestone discipline, the user
+  instigates Task 11.
