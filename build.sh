@@ -35,6 +35,8 @@ BUILD_NUMBER="1"
 MIN_MACOS="14.0"
 DRYRUN_MARKER='VAULT_DRYRUN_SURFACE_V1'
 
+ICON_SRC="$ROOT/assets/icon.png"   # tracked source; built into AppIcon.icns below
+
 BUILD="$ROOT/build"
 DIST="$BUILD/dist"
 APP="$DIST/$APP_NAME.app"
@@ -136,6 +138,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>$APP_NAME</string>
     <key>CFBundleDisplayName</key><string>$APP_NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
@@ -157,6 +161,26 @@ if /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$APP/Contents/Info.plis
 fi
 if /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
   die "Info.plist declares CFBundleDocumentTypes — the app must expose no document surface"
+fi
+
+# ---- 7b. App icon — build AppIcon.icns from the committed assets/icon.png ------
+# Cosmetic only: an .icns in Resources + CFBundleIconFile in the plist. Generated
+# BEFORE the bundle is signed (step 8) so codesign seals it. Adds no URL/document
+# /CLI surface. Done in a temp .iconset (sips resizes, iconutil packs).
+if [ -f "$ICON_SRC" ]; then
+  say "Generate AppIcon.icns from $ICON_SRC"
+  ICONSET="$BUILD/AppIcon.iconset"
+  rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+  for sz in 16 32 128 256 512; do
+    sips -z "$sz" "$sz" "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1 \
+      || die "sips ${sz}x${sz} failed"
+    sips -z "$((sz*2))" "$((sz*2))" "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1 \
+      || die "sips ${sz}x${sz}@2x failed"
+  done
+  iconutil -c icns "$ICONSET" -o "$RES_DIR/AppIcon.icns" || die "iconutil failed"
+  [ -f "$RES_DIR/AppIcon.icns" ] || die "AppIcon.icns not produced"
+else
+  say "No $ICON_SRC — building without a custom icon (plist still names AppIcon)"
 fi
 
 # ---- 8. Sign the bundle (outer seal; leaves the signed nested helper intact) --
