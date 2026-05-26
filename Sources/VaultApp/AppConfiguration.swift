@@ -13,8 +13,9 @@ struct AppConfiguration {
     /// Absolute path to the bundled `vaultseal` (Task 11 embeds + signs it here).
     let helperURL: URL
     /// SHA-256 of the bundled helper, compiled into the app at bundling time
-    /// (NEVER read from a writable sidecar — app.md §9). Empty until Task 11
-    /// fills it, which makes the launch preflight fail closed by design.
+    /// (NEVER read from a writable sidecar — app.md §9). Sourced from
+    /// `BundledHelper.sha256`, which `build.sh` injects; empty in a non-bundled
+    /// build, which makes the launch preflight fail closed by design.
     let compiledHelperSHA256: [UInt8]
     /// Where the (non-secret) schedule preferences are persisted.
     var schedulePrefsURL: URL { vaultDir.appendingPathComponent("schedule.json") }
@@ -27,7 +28,8 @@ struct AppConfiguration {
         // Inside the .app: Contents/Helpers/vaultseal (Task 11 lays this out).
         let helper = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Helpers/vaultseal")
-        return AppConfiguration(vaultDir: dir, helperURL: helper, compiledHelperSHA256: [])
+        return AppConfiguration(vaultDir: dir, helperURL: helper,
+                                compiledHelperSHA256: BundledHelper.sha256)
     }
 }
 

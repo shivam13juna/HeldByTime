@@ -730,12 +730,43 @@ text-system / state-restoration pieces are type-checked + statically guarded; th
 - **No Task 11 work pulled forward:** the helper hash is still EMPTY (preflight fail-closed)
   and no bundle is assembled.
 
-**Task 11 — `.app` bundling + signing.** `build.sh` **runs the gate tests first and
-refuses to assemble/sign if any are red** → `go build -mod=vendor` helper (arm64) →
-`swiftc` → assemble `.app` (Info.plist, no CLI/URL surface) → **release build fails if
-any `DEBUG` dry-run symbol/flag present** → sign nested `vaultseal` first, then ad-hoc
-sign the bundle → verify `codesign --verify --deep --strict`, `otool -L`, `file`, Finder
-double-click. (Signing + self-test = integrity, not a commitment boundary.)
+**Task 11 — `.app` bundling + signing. ✅** `./run_tests` green (284 PASS / 0 FAIL), and
+`./build.sh` produces a `codesign --verify --deep --strict`-valid `EncryptedVault.app`.
+
+- **`build.sh`** (gitignored output under `build/dist/`). Pipeline: **gate** (`./run_tests`
+  first — refuses to assemble/sign if red, app.md §10 s13) → `go build -mod=vendor` helper
+  (`GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 -trimpath`) → **sign the nested helper** (ad-hoc
+  `-s -`, hardened runtime) → **hash the SIGNED helper** and inject that SHA-256 into the
+  app → `swiftc -O -parse-as-library` release app (links the static Argon2 lib + SwiftUI) →
+  restore `BundledHelper.swift` to its empty default → **no-dry-run check** (`strings | grep
+  VAULT_DRYRUN_SURFACE_V1` on the shipped binary, must be absent) → write Info.plist (APPL,
+  no `CFBundleURLTypes`/`CFBundleDocumentTypes` — no CLI/URL/recent-docs surface) → **sign
+  the bundle** → verify (`codesign --verify --deep --strict`; **embedded helper hash ==
+  compiled-in hash** post-bundle-sign; `otool -L` has only system/Swift dylibs, no
+  `/usr/local`·`@rpath`; `file` says arm64 Mach-O).
+- **Helper-signed-BEFORE-hashed (the subtle one):** `codesign` rewrites the Mach-O
+  signature, so hashing the unsigned helper would compile in a value the shipped (signed)
+  helper never matches → the app would safely **fail closed forever** (preflight hash
+  mismatch) and could never seal/open. We hash exactly the bytes the app preflights at
+  runtime; a build-time assertion re-checks equality after the *bundle* is signed.
+- **`Sources/VaultApp/BundledHelper.swift`** (NEW) — the single compiled-in helper hash
+  (`BundledHelper.sha256`, wired into `AppConfiguration.live`). Committed value is **empty**
+  (fail-closed: `HelperRunner.preflight` → "no expected helper hash configured"); `build.sh`
+  rewrites it for the build and restores the empty default after, so the tracked tree stays
+  fail-closed. This is what finally takes `compiledHelperSHA256` off EMPTY in a real build.
+- **`run_tests` step 1 relaxed:** the `.app` scope guard now excludes `build/` (the official
+  artifact dir) but still forbids a `.app` anywhere in the tracked source tree.
+- **Gate (`run_tests` step 7e, static — `build/bundling-gate`):** lints `build.sh` for the
+  security-critical ordering + steps it can't run itself (it RUNS the harness, so it can't
+  be invoked from inside it): **gate runs before any `codesign`**, **nested helper signed
+  before the bundle**, presence of `codesign --verify --deep --strict` / `otool -L` /
+  dry-run check / `shasum` / `plutil -lint`, and that the hash is **compiled in**
+  (`AppConfiguration` uses `BundledHelper.sha256`, `build.sh` injects into
+  `BundledHelper.swift`). The empirical proof is producing the verified bundle by running it.
+- Verified once on this machine (M3 Max, swiftc 6.2.4, SDK 26.2): bundle layout
+  `Contents/{MacOS/EncryptedVault, Helpers/vaultseal, Info.plist, PkgInfo, _CodeSignature}`,
+  ad-hoc signature, `Identifier=com.shivam.encryptedvault`, embedded == compiled-in hash
+  `1a89b3…61d4`. A **live launch** is left to Task 12 (E2E across a real window boundary).
 
 **Task 12 — End-to-end test across a real window boundary.** Seal near-future → won't
 open early → opens at round → window-end re-seal → force-kill mid-window → defensive
@@ -747,28 +778,28 @@ re-seal closes the gap → offline-at-unlock fails closed → final §11 review.
 ---
 
 ## Current status
-- Tasks 1–10: **complete, `./run_tests` green (283 checks).**
-- The SwiftUI app shell now exists in `Sources/VaultApp/` and type-checks against the
-  engines, but there is **still no `.app` and no real secrets** — the bundle isn't
-  assembled until Task 11, and `AppConfiguration.compiledHelperSHA256` defaults to EMPTY
-  (so `HelperRunner.preflight` fail-closes until Task 11 compiles in the real hash). The
-  store, session, self-test, and first-run flow remain the authoritative engines; the UI
-  is thin glue: `bootstrap`→`VaultStore.load()` for locked/open, `VaultSession.open`/
-  `reseal` for the session + its triggers (Lock / Cmd-Q / window-end), and
-  `FirstRunSetup` for onboarding.
-- The no-durable-plaintext defenses (Task 10) are now installed: core dumps off
-  (unit-tested), the hardened `NSTextView` editor, secrets via `SecureField` + read-only
-  reveal, Saved-App-State / window restoration off, and the step-7d static leak guard
-  (incl. a no-`print`/`NSLog`/`os_log` ban on the engine/UI). The runtime "no durable
-  plaintext after force-kill" assertion itself is deferred to Task 12's E2E (it needs the
-  real running `.app`).
-- Next: **Task 11 — `.app` bundling + signing (build-gated on tests).** `build.sh` **runs
-  the gate tests first and refuses to assemble/sign if any are red** → `go build
-  -mod=vendor` helper (arm64) → `swiftc` → assemble `.app` (Info.plist, no CLI/URL
-  surface) → **release build fails if any `DEBUG` dry-run symbol/flag is present** → sign
-  the nested `vaultseal` FIRST, then ad-hoc sign the bundle → verify `codesign --verify
-  --deep --strict`, `otool -L`, `file`, Finder double-click. **Crucially, compile in the
-  real `vaultseal` SHA-256** so `AppConfiguration.compiledHelperSHA256` is no longer EMPTY
-  (today it is empty by design → preflight fail-closed). **Before implementing, read
-  `app.md` §10 steps 13–14 and §11.** Per the project's milestone discipline, the user
-  instigates Task 11.
+- Tasks 1–11: **complete, `./run_tests` green (284 checks);** `./build.sh` produces a
+  `codesign --verify --deep --strict`-valid `EncryptedVault.app`.
+- The official build path now exists: `./build.sh` gates on the harness, builds + signs the
+  arm64 helper, **compiles in the signed helper's real SHA-256** (so a *bundled* app no
+  longer fail-closes at preflight — the committed source still does, by design), compiles
+  the release app, bans the dry-run surface, assembles a no-CLI/URL/document `.app`, and
+  verifies it. The store, session, self-test, and first-run flow remain the authoritative
+  engines; the UI is thin glue: `bootstrap`→`VaultStore.load()` for locked/open,
+  `VaultSession.open`/`reseal` for the session + its triggers (Lock / Cmd-Q / window-end),
+  and `FirstRunSetup` for onboarding.
+- The no-durable-plaintext defenses (Task 10) are installed: core dumps off (unit-tested),
+  the hardened `NSTextView` editor, secrets via `SecureField` + read-only reveal,
+  Saved-App-State / window restoration off, and the step-7d static leak guard (incl. a
+  no-`print`/`NSLog`/`os_log` ban on the engine/UI).
+- **Honest scope of what "green + a signed .app" proves:** the bundle is assembled, signed,
+  and integrity-verified, and the compiled-in helper hash matches the shipped helper. It
+  does **not** yet prove the app *runs* correctly end-to-end, nor the runtime "no durable
+  plaintext after force-kill" assertion — both are **Task 12** (a live launch across a real
+  window boundary). No real secret has been stored.
+- Next: **Task 12 — End-to-end test across a real window boundary.** Seal near-future → won't
+  open early → opens at round → window-end re-seal → **force-kill mid-window** → defensive
+  re-seal closes the gap → **offline-at-unlock fails closed** → and the empirical
+  no-durable-plaintext (force-kill + scan disk) assertion → final §11 review. **Before
+  implementing, read `app.md` §10 step 14 and §11.** Per the project's milestone discipline,
+  the user instigates Task 12.
