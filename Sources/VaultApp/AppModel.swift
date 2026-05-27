@@ -44,6 +44,10 @@ final class AppModel: ObservableObject {
 
     private let config: AppConfiguration
 
+    /// The secret-free diagnostics trail (shared with the background agent).
+    /// Exposed so DiagnosticsView can read it; logging itself stays in this model.
+    var diagnosticsLog: DiagnosticLog { DiagnosticLog(url: config.diagnosticsLogURL) }
+
     init(config: AppConfiguration = .live) {
         ProcessHardening.disableCoreDumps()   // no core file can hold decrypted secrets
         self.config = config
@@ -73,6 +77,17 @@ final class AppModel: ObservableObject {
     /// Decide the opening screen: first-run setup if no vault file exists, else
     /// run the load state-machine and route its result.
     func bootstrap() {
+        diagnosticsLog.record(.appLaunched, source: .app)
+
+        // Keep the periodic re-seal LaunchAgent installed/current (best-effort,
+        // off the main thread — it shells out to launchctl). This is what closes
+        // the password-only "expired vault" hatch even when the app isn't opened.
+        let log = diagnosticsLog
+        DispatchQueue.global(qos: .utility).async {
+            let ok = ResealAgentInstaller.installOrRefresh()
+            log.record(.agentRegistered(success: ok), source: .app)
+        }
+
         guard vaultExists else {
             phase = .firstRun(FirstRunModel(config: config) { [weak self] in self?.reload() })
             return
@@ -86,12 +101,34 @@ final class AppModel: ObservableObject {
         phase = .loading
         let store = makeStore()
         let outcome = store.load()
+        logOutcome(outcome)
         switch outcome.result {
         case .openWindow(let window, let payload):
             unlockError = nil
             phase = .unlockPrompt(window: window, payload: payload)
         case .lockedUntil, .resealed, .offline, .failClosed:
             phase = .locked(LockScreen.describe(outcome.result, calendar: schedulePrefs.calendar))
+        }
+    }
+
+    /// Record a load() outcome (and any hash-only quarantine records) to the
+    /// secret-free diagnostics trail. Carries round numbers and a closed outcome
+    /// kind only — never any decrypted payload (I13).
+    private func logOutcome(_ outcome: VaultLoadOutcome) {
+        let kind: DiagnosticEvent.LoadKind
+        let round: UInt64?
+        switch outcome.result {
+        case .openWindow(let window, _): kind = .openWindow; round = window.startRound
+        case .lockedUntil(let r):        kind = .locked;     round = r
+        case .resealed(let window):      kind = .resealed;   round = window.startRound
+        case .offline:                   kind = .offline;    round = nil
+        case .failClosed:                kind = .failClosed; round = nil
+        }
+        let log = diagnosticsLog
+        log.record(.checkedVault(kind, round: round), source: .app)
+        for q in outcome.quarantines {
+            log.record(.quarantine(side: q.side == .primary ? "primary" : "backup",
+                                    sha256Hex: q.sha256Hex, reason: q.reason), source: .app)
         }
     }
 
@@ -106,7 +143,9 @@ final class AppModel: ObservableObject {
         switch VaultSession.open(store: store, window: window, payload: payload, password: pw) {
         case .failure:
             // Deliberately generic — never reveal whether it was the password vs
-            // a structural problem, and never construct partial content.
+            // a structural problem, and never construct partial content. The log
+            // is equally coarse (no password-vs-corrupt oracle).
+            diagnosticsLog.record(.unlock(success: false), source: .app)
             unlockError = "Could not unlock. Check your password and try again."
         case .success(let opened):
             do {
@@ -116,6 +155,7 @@ final class AppModel: ObservableObject {
                 phase = .failed("The vault decrypted but its contents are unreadable.")
                 return
             }
+            diagnosticsLog.record(.unlock(success: true), source: .app)
             unlockError = nil
             phase = .unlocked(opened.session)
         }
@@ -133,11 +173,13 @@ final class AppModel: ObservableObject {
         catch { unlockError = "Notes too large to save."; return false }
         switch session.reseal(notes: notes, trigger: trigger) {
         case .success(let window):
+            diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
             content = VaultContent()            // drop plaintext from the model
             phase = .locked(LockScreen.describe(.lockedUntil(displayStartRound: window.startRound),
                                                 calendar: schedulePrefs.calendar))
             return true
         case .failure:
+            diagnosticsLog.record(.resealFailed, source: .app)
             unlockError = "Could not re-lock the vault (are you online?). Your notes are unchanged on disk."
             return false
         }
