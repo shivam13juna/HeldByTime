@@ -12,45 +12,66 @@ struct SettingsView: View {
     @State private var draft: SchedulePrefs = .default
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Daily windows").font(.title2).bold()
-            Text("The vault can only be opened inside one of these local-time windows. "
-                 + "Changing them affects only the next time the vault re-seals — it never "
-                 + "opens an already-sealed vault early.")
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Settings").font(.title2).bold()
 
-            ForEach($draft.windows) { $w in
-                WindowEditorRow(window: $w) {
-                    draft.windows.removeAll { $0.id == w.id }
+                    SectionCard(title: "Daily windows", systemImage: "clock.fill",
+                                subtitle: "The vault can only be opened inside one of these local-time "
+                                    + "windows. Changing them affects only the next time the vault "
+                                    + "re-seals — it never opens an already-sealed vault early.") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach($draft.windows) { $w in
+                                WindowEditorRow(window: $w) {
+                                    draft.windows.removeAll { $0.id == w.id }
+                                }
+                            }
+                            if draft.windows.isEmpty {
+                                Text("At least one window is required — there is no always-open mode. "
+                                     + "Add a window to save.")
+                                    .font(.caption).foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Button {
+                                draft.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
+                            } label: { Label("Add window", systemImage: "plus") }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+
+                    // Cosmetic appearance choice. Applies immediately (it isn't part
+                    // of the schedule draft) and never affects the lock.
+                    SectionCard(title: "Appearance", systemImage: "circle.lefthalf.filled") {
+                        Picker("Appearance", selection: Binding(
+                            get: { model.uiPrefs.appearance },
+                            set: { model.applyAppearance($0) })) {
+                            ForEach(Appearance.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
                 }
+                .padding(VaultUI.screenPadding)
             }
 
-            if draft.windows.isEmpty {
-                Text("At least one window is required — there is no always-open mode. "
-                     + "Add a window to save.")
-                    .font(.caption).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button {
-                draft.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
-            } label: { Label("Add window", systemImage: "plus") }
-
-            Spacer()
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .controlSize(.large)
                 Button("Save") {
                     model.applySchedule(draft)
                     dismiss()
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.windows.isEmpty)
             }
+            .padding(16)
         }
-        .padding(24)
-        .frame(width: 460, height: 420)
+        .frame(width: 480, height: 460)
         .onAppear { draft = model.schedulePrefs }
     }
 }

@@ -18,6 +18,10 @@ struct LockScreenInfo: Equatable {
     /// as guidance only; nil when there is no meaningful hint (offline) or it is
     /// irrelevant (open / fail-closed).
     let untilLocalTime: String?
+    /// A coarse, human relative phrase for the same instant ("Opens in about 6
+    /// hours"), computed once from `now` — NOT a live countdown. Display-only
+    /// guidance; nil whenever `untilLocalTime` is.
+    let untilRelative: String?
     /// True ONLY when the load result authorizes showing the password prompt
     /// (i.e. `.openWindow`). Every other state must keep the prompt hidden.
     let canPrompt: Bool
@@ -31,30 +35,33 @@ enum LockScreen {
     /// only affect the formatted "until" time (the calendar carries the time
     /// zone); the security decision was already made by `VaultStore.load()`.
     static func describe(_ result: VaultLoadResult,
-                         calendar: Calendar = .current) -> LockScreenInfo {
+                         calendar: Calendar = .current,
+                         now: Date = Date()) -> LockScreenInfo {
         switch result {
         case .openWindow:
             return LockScreenInfo(
                 title: "Window open",
                 message: "Your window is open. Enter your vault password to unlock.",
-                untilLocalTime: nil, canPrompt: true, canRetry: false)
+                untilLocalTime: nil, untilRelative: nil, canPrompt: true, canRetry: false)
 
         case .lockedUntil(let displayStartRound):
             let until = displayStartRound.map { Self.localTime(forRound: $0, calendar: calendar) }
+            let relative = displayStartRound.map { Self.relativeOpen(forRound: $0, now: now) }
             let when = until.map { " Expected to open around \($0)." } ?? ""
             return LockScreenInfo(
                 title: "Locked",
                 message: "The vault is sealed until its next window.\(when) "
                     + "It cannot be opened early — not by password, not by changing the clock.",
-                untilLocalTime: until, canPrompt: false, canRetry: true)
+                untilLocalTime: until, untilRelative: relative, canPrompt: false, canRetry: true)
 
         case .resealed(let window):
             let until = Self.localTime(forRound: window.startRound, calendar: calendar)
+            let relative = Self.relativeOpen(forRound: window.startRound, now: now)
             return LockScreenInfo(
                 title: "Re-locked",
                 message: "The vault was past its window and has been sealed forward "
                     + "to the next one. Expected to open around \(until).",
-                untilLocalTime: until, canPrompt: false, canRetry: true)
+                untilLocalTime: until, untilRelative: relative, canPrompt: false, canRetry: true)
 
         case .offline:
             return LockScreenInfo(
@@ -62,15 +69,34 @@ enum LockScreen {
                 message: "Can't reach the time-lock network (drand) to verify the time. "
                     + "The vault stays sealed until you're back online. "
                     + "If you use Canopy, make sure api.drand.sh is whitelisted.",
-                untilLocalTime: nil, canPrompt: false, canRetry: true)
+                untilLocalTime: nil, untilRelative: nil, canPrompt: false, canRetry: true)
 
         case .failClosed(let reason):
             return LockScreenInfo(
                 title: "Unavailable",
                 message: "The vault could not be opened and access is refused for safety. "
                     + "Details: \(reason)",
-                untilLocalTime: nil, canPrompt: false, canRetry: false)
+                untilLocalTime: nil, untilRelative: nil, canPrompt: false, canRetry: false)
         }
+    }
+
+    /// A coarse "Opens in about N …" phrase for the round's publication instant,
+    /// relative to `now`. Deliberately rounded (no minutes-and-seconds) and
+    /// computed once — this is reassurance about when to come back, not a clock.
+    private static func relativeOpen(forRound round: UInt64, now: Date) -> String {
+        let seconds = TrustedTime.date(forRound: round).timeIntervalSince(now)
+        guard seconds > 0 else { return "Opens shortly" }
+
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 60 {
+            return minutes <= 1 ? "Opens in under a minute" : "Opens in about \(minutes) minutes"
+        }
+        let hours = Int((seconds / 3600).rounded())
+        if hours < 24 {
+            return hours == 1 ? "Opens in about an hour" : "Opens in about \(hours) hours"
+        }
+        let days = Int((seconds / 86400).rounded())
+        return days == 1 ? "Opens in about a day" : "Opens in about \(days) days"
     }
 
     /// Format the publication instant of `round` in the calendar's time zone.

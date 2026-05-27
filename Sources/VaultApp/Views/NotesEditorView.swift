@@ -21,11 +21,11 @@ struct NotesEditorView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 16) {
                     secretsSection
                     notesSection
                 }
-                .padding(20)
+                .padding(VaultUI.screenPadding)
             }
         }
         .frame(minWidth: 480, minHeight: 460)
@@ -33,35 +33,41 @@ struct NotesEditorView: View {
     }
 
     private var header: some View {
-        HStack {
-            Label("Vault open", systemImage: "lock.open.fill").font(.headline)
+        HStack(spacing: 10) {
+            Label("Vault open", systemImage: "lock.open.fill")
+                .font(.headline)
+                .foregroundStyle(.green)
             Spacer()
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                .help("Schedule")
+                .buttonStyle(.borderless)
+                .help("Settings")
             Button("Lock now") { model.lock() }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut("l", modifiers: [.command])
                 .help("Re-seal the vault until the next window")
         }
-        .padding(12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private var secretsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Secrets").font(.title3).bold()
-            ForEach($model.content.secrets) { $secret in
-                SecretRow(secret: $secret) {
-                    model.content.secrets.removeAll { $0.id == secret.id }
+        SectionCard(title: "Secrets", systemImage: "key.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach($model.content.secrets) { $secret in
+                    SecretRow(secret: $secret) {
+                        model.content.secrets.removeAll { $0.id == secret.id }
+                    }
                 }
+                Button {
+                    model.content.secrets.append(VaultSecret(label: ""))
+                } label: { Label("Add secret", systemImage: "plus") }
+                    .buttonStyle(.borderless)
             }
-            Button {
-                model.content.secrets.append(VaultSecret(label: ""))
-            } label: { Label("Add secret", systemImage: "plus") }
         }
     }
 
     private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Notes").font(.title3).bold()
+        SectionCard(title: "Notes", systemImage: "note.text") {
             // Hardened NSTextView — no spellcheck/data-detectors/undo persistence.
             HardenedTextEditor(text: $model.content.notes)
                 .frame(minHeight: 160)
@@ -79,18 +85,23 @@ struct SecretRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 TextField("Label", text: $secret.label)
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout.weight(.medium))
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
                 Spacer()
                 Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
                     .help("Remove this secret")
             }
             RevealableSecureField(placeholder: "value", text: $secret.value)
         }
-        .padding(.vertical, 4)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
     }
 }

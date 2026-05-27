@@ -12,13 +12,15 @@ struct UnlockView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "lock.open.fill").font(.system(size: 40)).foregroundStyle(.secondary)
+            GlyphBadge(systemImage: "lock.open.fill", tint: .green)
             Text("Window open").font(.title2).bold()
             Text("Enter your vault password to unlock.")
+                .font(.callout)
                 .foregroundStyle(.secondary)
 
             RevealableSecureField(placeholder: "Vault password", text: $password, onSubmit: submit)
                 .frame(maxWidth: 300)
+                .padding(.top, 4)
 
             if let err = model.unlockError {
                 Text(err).font(.callout).foregroundStyle(.red)
@@ -27,10 +29,14 @@ struct UnlockView: View {
 
             Button("Unlock", action: submit)
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(password.isEmpty)
+                .padding(.top, 4)
         }
-        .padding(36)
-        .frame(maxWidth: 420)
+        .glassCard()
+        .frame(maxWidth: 380)
+        .padding(VaultUI.screenPadding)
     }
 
     private func submit() {
