@@ -24,11 +24,19 @@ final class FirstRunModel: ObservableObject {
 
     private let config: AppConfiguration
     private let onComplete: () -> Void
+    private let onCancel: () -> Void
 
-    init(config: AppConfiguration, onComplete: @escaping () -> Void) {
+    init(config: AppConfiguration,
+         onComplete: @escaping () -> Void,
+         onCancel: @escaping () -> Void = {}) {
         self.config = config
         self.onComplete = onComplete
+        self.onCancel = onCancel
     }
+
+    /// Abandon setup before any vault.dat is sealed (the coordinator removes the
+    /// empty allocated directory).
+    func cancel() { onCancel() }
 
     /// Live, advisory weakness hint (does not block).
     var weaknessWarning: String? {
@@ -117,10 +125,18 @@ struct FirstRunView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Set up your vault").font(.largeTitle).bold()
-                    Text("A time-locked vault — it can only be opened inside a daily window.")
-                        .font(.callout).foregroundStyle(.secondary)
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Set up your vault").font(.largeTitle).bold()
+                        Text("A time-locked vault — it can only be opened inside a daily window.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { setup.cancel() } label: {
+                        Label("Cancel", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(setup.running)
                 }
                 .padding(.bottom, 4)
 

@@ -66,24 +66,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-/// Switches on the model phase. Each case is a small dedicated view.
+/// Switches on the app-level screen. Each case is a small dedicated view. A
+/// selected vault gets its own VaultModel injected into the environment so its
+/// subtree (locked / unlock / editor) observes that one vault.
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        phaseView
+        screenView
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // One place applies the user's light/dark choice to the whole app.
             .preferredColorScheme(model.uiPrefs.appearance.colorScheme)
     }
 
     @ViewBuilder
-    private var phaseView: some View {
-        switch model.phase {
-        case .launching, .loading:
-            ProgressView("Checking the time-lock…").padding()
-        case .firstRun(let setup):
+    private var screenView: some View {
+        switch model.screen {
+        case .launching:
+            ProgressView("Loading…").padding()
+        case .list:
+            VaultListView()
+        case .creating(let setup):
             FirstRunView(setup: setup)
+        case .open(let vault):
+            VaultRootView(vault: vault).environmentObject(vault)
+        case .failed(let message):
+            FailedView(message: message, log: model.appLog)
+        }
+    }
+}
+
+/// One selected vault. Switches on the vault's own phase; for every sealed state
+/// it floats a back-to-list control (the open editor carries its own navigation).
+struct VaultRootView: View {
+    @ObservedObject var vault: VaultModel
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        phaseView
+            .overlay(alignment: .topLeading) { backButton }
+    }
+
+    @ViewBuilder
+    private var phaseView: some View {
+        switch vault.phase {
+        case .loading:
+            ProgressView("Checking the time-lock…").padding()
         case .locked(let info):
             LockedView(info: info)
         case .unlockPrompt:
@@ -91,15 +119,35 @@ struct RootView: View {
         case .unlocked:
             NotesEditorView()
         case .failed(let message):
-            FailedView(message: message)
+            FailedView(message: message, log: vault.diagnosticsLog)
         }
+    }
+
+    /// Shown for every state except the open editor (which has its own header
+    /// with a "Vaults" button). Leaving an open editor seals first (closeCurrent).
+    @ViewBuilder
+    private var backButton: some View {
+        if !isUnlocked {
+            Button { app.closeCurrent() } label: {
+                Label("Vaults", systemImage: "chevron.left")
+            }
+            .buttonStyle(.borderless)
+            .padding(12)
+        }
+    }
+
+    private var isUnlocked: Bool {
+        if case .unlocked = vault.phase { return true }
+        return false
     }
 }
 
 /// A terminal error screen (wiring/contents unrecoverable). No retry that could
-/// loop; the user must quit. Deliberately blunt and offers no access path.
+/// loop. Offers no access path; just the log and Quit. The log to show is passed
+/// in (a vault's own log, or the app-level log at the top level).
 struct FailedView: View {
     let message: String
+    let log: DiagnosticLog
     @State private var showLog = false
     var body: some View {
         VStack(spacing: 16) {
@@ -113,6 +161,6 @@ struct FailedView: View {
             }
         }
         .padding(32)
-        .sheet(isPresented: $showLog) { DiagnosticsView() }
+        .sheet(isPresented: $showLog) { DiagnosticsView(log: log) }
     }
 }

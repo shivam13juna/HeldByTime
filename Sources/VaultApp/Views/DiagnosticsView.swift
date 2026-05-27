@@ -13,7 +13,10 @@
 import SwiftUI
 
 struct DiagnosticsView: View {
-    @EnvironmentObject private var model: AppModel
+    /// The log to display — a vault's own diagnostics.log, or the app-level log.
+    /// Passed in (not read from the environment) so the same viewer serves both
+    /// a selected vault and the top-level failed screen.
+    let log: DiagnosticLog
     @Environment(\.dismiss) private var dismiss
     @State private var lines: [String] = []
 
@@ -65,7 +68,7 @@ struct DiagnosticsView: View {
             Divider()
             HStack {
                 Button(role: .destructive) {
-                    model.diagnosticsLog.clear()
+                    log.clear()
                     reload()
                 } label: { Label("Clear log", systemImage: "trash") }
                     .disabled(lines.isEmpty)
@@ -81,6 +84,6 @@ struct DiagnosticsView: View {
     }
 
     private func reload() {
-        lines = model.diagnosticsLog.tail()
+        lines = log.tail()
     }
 }
