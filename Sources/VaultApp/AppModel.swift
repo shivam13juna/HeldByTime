@@ -25,6 +25,11 @@ final class AppModel: ObservableObject {
     @Published var screen: AppScreen = .launching
     /// The vaults currently on disk (sealed). Drives the list; refreshed on change.
     @Published var entries: [VaultEntry] = []
+    /// DISPLAY-ONLY advisory: each vault's next scheduled window opening (wall
+    /// clock, from its schedule.json), keyed by vault id. Recomputed on every
+    /// `refreshEntries()`. NEVER authorizes access — the list does not probe the
+    /// real lock state (no network); opening the vault runs the authoritative gate.
+    @Published var advisoryOpenings: [String: Date] = [:]
     /// App-global cosmetic appearance (light/dark), shared by every vault.
     @Published var uiPrefs: UIPrefs
 
@@ -59,8 +64,21 @@ final class AppModel: ObservableObject {
         screen = .list
     }
 
-    /// Re-read the vault directories from disk.
-    func refreshEntries() { entries = registry.list() }
+    /// Re-read the vault directories from disk and recompute the advisory next
+    /// opening for each (wall-clock, schedule-derived — see `advisoryOpenings`).
+    func refreshEntries() {
+        entries = registry.list()
+        let now = Date()
+        var openings: [String: Date] = [:]
+        for entry in entries {
+            let url = env.configuration(for: entry).schedulePrefsURL
+            let prefs = (try? SchedulePrefs.load(from: url)) ?? .default
+            if let next = prefs.schedule.nextWindowOpening(after: now) {
+                openings[entry.id] = next
+            }
+        }
+        advisoryOpenings = openings
+    }
 
     // MARK: - Navigation
 
@@ -124,6 +142,50 @@ final class AppModel: ObservableObject {
         _ = registry.delete(id: entry.id)
         if case .open(let vm) = screen, vm.id == entry.id { screen = .list }
         refreshEntries()
+    }
+
+    // MARK: - Rename
+
+    /// Relabel a vault (NON-secret metadata only — the label is never part of the
+    /// lock). A blank name is ignored. Refreshes the list to show the new label.
+    func renameVault(_ entry: VaultEntry, to newLabel: String) {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != entry.meta.label else { return }
+        _ = registry.rename(id: entry.id, to: trimmed)
+        refreshEntries()
+    }
+
+    // MARK: - Merged activity log
+
+    /// Tag for the app-scope (non-vault) log in the merged view.
+    private static let appLogTag = "App"
+
+    /// Every log line — the app-scope log plus each vault's diagnostics.log —
+    /// merged into one chronological list, each line prefixed with its source
+    /// (the app, or the vault's label). All of it is secret-free by construction
+    /// (DiagnosticLog / I13). Sorted by the ISO-8601 timestamp every line begins
+    /// with: the formats are identical across logs, so lexical order is chronological.
+    func mergedLogLines() -> [String] {
+        var tagged: [(key: String, decorated: String)] = []
+        for line in appLog.tail() {
+            tagged.append((line, "[\(Self.appLogTag)] \(line)"))
+        }
+        for entry in entries {
+            let log = DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
+            for line in log.tail() {
+                tagged.append((line, "[\(entry.meta.label)] \(line)"))
+            }
+        }
+        return tagged.sorted { $0.key < $1.key }.map(\.decorated)
+    }
+
+    /// Clear the app-scope log and every vault's diagnostics.log. All non-secret;
+    /// safe to wipe at any time (diagnostics, not an audit trail).
+    func clearAllLogs() {
+        appLog.clear()
+        for entry in entries {
+            DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL).clear()
+        }
     }
 
     // MARK: - Appearance
