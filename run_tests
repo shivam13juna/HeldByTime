@@ -291,6 +291,14 @@ if ! grep -q 'HardenedTextEditor(text:' "$HARD" 2>/dev/null; then
   emit FAIL leak/reveal-hardening "RevealableSecureField no longer routes its revealed state through HardenedTextEditor"
   leak_ok=0
 fi
+# (g) The locked screen must NOT reach the schedule editor. Editing windows only
+#     affects the next re-seal (never the current sealed window), so exposing it
+#     while sealed is misleading; windows are editable at first-run / open editor
+#     only. Fences the "can't touch the lock while sealed" property.
+if grep -q 'SettingsView' Sources/VaultApp/Views/LockedView.swift 2>/dev/null; then
+  emit FAIL leak/locked-no-schedule "LockedView references SettingsView — the schedule must not be editable from a sealed/locked state"
+  leak_ok=0
+fi
 [ "$leak_ok" = 1 ] && emit PASS leak/guard
 
 # ---- 7e. build.sh bundling-gate lint (Task 11; app.md §10 step 13, §11) ----

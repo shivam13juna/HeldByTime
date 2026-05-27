@@ -4,13 +4,17 @@
 // (`canPrompt` is false for every locked state; only `.openWindow` routes to
 // UnlockView). This is the visible half of unseal-as-gate: there is nothing to
 // type here that could open the vault early.
+//
+// The schedule is intentionally NOT editable from here: changing windows only
+// affects the NEXT re-seal, never the current sealed window, so offering it on
+// the locked screen is misleading. Windows are edited at first-run and from the
+// open editor only — you cannot touch the lock while it is sealed.
 
 import SwiftUI
 
 struct LockedView: View {
     let info: LockScreenInfo
     @EnvironmentObject private var model: AppModel
-    @State private var showSettings = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -21,18 +25,14 @@ struct LockedView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 12) {
-                if info.canRetry {
-                    Button("Check again") { model.reload() }
-                        .keyboardShortcut(.defaultAction)
-                }
-                Button("Schedule…") { showSettings = true }
+            if info.canRetry {
+                Button("Check again") { model.reload() }
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.top, 4)
             }
-            .padding(.top, 4)
         }
         .padding(36)
         .frame(maxWidth: 460)
-        .sheet(isPresented: $showSettings) { SettingsView() }
     }
 
     private var icon: String {
