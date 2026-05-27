@@ -13,43 +13,53 @@
 //     so launchd simply retries on its next interval (and on wake).
 //
 // So whether run by launchd, from a terminal, or by a curious future self, this
-// agent can only ever RE-LOCK the vault — never open it. It is the time-lock's
+// agent can only ever RE-LOCK a vault — never open one. It is the time-lock's
 // ally, not an entry point. Top-level code is the entry point (file is main.swift);
 // no @main, so it does not collide with the app's @main and stays out of the UI
 // type-check / leak globs.
+//
+// MULTI-VAULT: the agent enumerates EVERY vault under the root and re-seals each
+// INDEPENDENTLY. A failure on one vault (offline, malformed, future-sealed) is
+// recorded to that vault's own log and the agent moves on — one bad vault never
+// blocks re-sealing the rest. With zero vaults there is simply nothing to do.
 
 import Foundation
 
-// Resolve where we (and our sibling vaultseal) live, plus the shared vault dir.
-guard let config = AppConfiguration.resealAgent() else {
+// Resolve where we (and our sibling vaultseal) live, plus the vaults root.
+guard let env = AppEnvironment.resealAgent() else {
     exit(2)   // couldn't locate ourselves — fail closed, change nothing.
 }
 
-// The schedule (windows) is only consulted to pick the NEXT window for a forward
-// re-seal; a missing file falls back to the default, never to "always open".
-let prefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
+// Enumerate the vaults; an unreadable/empty root yields [] (nothing to re-seal).
+for entry in env.registry.list() {
+    let config = env.configuration(for: entry)
 
-let runner = HelperRunner(executableURL: config.helperURL,
-                          expectedSHA256: config.compiledHelperSHA256)
-let client = VaultSealClient(runner: runner)
-let store = VaultStore(dir: config.vaultDir, client: client, schedule: prefs.schedule)
+    // The schedule (windows) is only consulted to pick the NEXT window for a
+    // forward re-seal; a missing file falls back to the default, never "always open".
+    let prefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
 
-// Run the load state machine for its re-seal SIDE EFFECT only; the result (which
-// may carry a still-encrypted payload for the open-window case) is intentionally
-// dropped — we have no password and never construct plaintext.
-let outcome = store.load()
+    let runner = HelperRunner(executableURL: config.helperURL,
+                              expectedSHA256: config.compiledHelperSHA256)
+    let client = VaultSealClient(runner: runner)
+    let store = VaultStore(dir: config.vaultDir, client: client, schedule: prefs.schedule)
 
-// Record a SECRET-FREE line so the user can see in DiagnosticsView that the
-// background agent ran and what it did (re-sealed / locked / offline / …). Maps
-// the result to a closed kind; carries no payload.
-let kind: DiagnosticEvent.LoadKind
-switch outcome.result {
-case .openWindow: kind = .openWindow
-case .lockedUntil: kind = .locked
-case .resealed:   kind = .resealed
-case .offline:    kind = .offline
-case .failClosed: kind = .failClosed
+    // Run the load state machine for its re-seal SIDE EFFECT only; the result
+    // (which may carry a still-encrypted payload for the open-window case) is
+    // intentionally dropped — we have no password and never construct plaintext.
+    let outcome = store.load()
+
+    // Record a SECRET-FREE line to THIS vault's trail so DiagnosticsView (and the
+    // merged log) show the agent ran and what it did (re-sealed / locked / offline
+    // / …). Maps the result to a closed kind; carries no payload.
+    let kind: DiagnosticEvent.LoadKind
+    switch outcome.result {
+    case .openWindow: kind = .openWindow
+    case .lockedUntil: kind = .locked
+    case .resealed:   kind = .resealed
+    case .offline:    kind = .offline
+    case .failClosed: kind = .failClosed
+    }
+    DiagnosticLog(url: config.diagnosticsLogURL).record(.agentRan(kind), source: .agent)
 }
-DiagnosticLog(url: config.diagnosticsLogURL).record(.agentRan(kind), source: .agent)
 
 exit(0)

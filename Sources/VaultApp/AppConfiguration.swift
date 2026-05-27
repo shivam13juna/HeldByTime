@@ -33,25 +33,6 @@ struct AppConfiguration {
     /// Where this vault's SECRET-FREE diagnostics trail lives (app + agent append;
     /// DiagnosticsView reads it). Non-secret by construction — see DiagnosticLog.
     var diagnosticsLogURL: URL { vaultDir.appendingPathComponent("diagnostics.log") }
-
-    /// Configuration for the headless re-seal agent (Contents/Helpers/vaultreseal).
-    /// The agent is NOT the .app — it runs as a loose executable nested in the
-    /// bundle — so `Bundle.main.bundleURL` is the Helpers directory, not the app.
-    /// The `vaultseal` helper is therefore the agent's SIBLING, resolved relative
-    /// to the agent's own executable, while the vault directory is the same
-    /// user-domain path the app uses. Same compiled-in helper hash, so the agent's
-    /// HelperRunner preflight is as strict as the app's. Returns nil if the
-    /// executable location can't be resolved (the agent then fails closed).
-    static func resealAgent() -> AppConfiguration? {
-        guard let exe = Bundle.main.executableURL else { return nil }
-        let helper = exe.deletingLastPathComponent().appendingPathComponent("vaultseal")
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = support.appendingPathComponent("EncryptedVault", isDirectory: true)
-        return AppConfiguration(vaultDir: dir, helperURL: helper,
-                                compiledHelperSHA256: BundledHelper.sha256)
-    }
 }
 
 /// APP-GLOBAL locations shared across all vaults: the vaults root (parent of every
@@ -93,6 +74,25 @@ struct AppEnvironment {
         let root = support.appendingPathComponent("EncryptedVault", isDirectory: true)
         // Inside the .app: Contents/Helpers/vaultseal (Task 11 lays this out).
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/vaultseal")
+        return AppEnvironment(vaultsRoot: root, helperURL: helper,
+                              compiledHelperSHA256: BundledHelper.sha256)
+    }
+
+    /// The environment for the headless re-seal agent (Contents/Helpers/vaultreseal).
+    /// The agent is NOT the .app — it runs as a loose executable nested in the
+    /// bundle — so `Bundle.main.bundleURL` is the Helpers directory, not the app.
+    /// The `vaultseal` helper is therefore the agent's SIBLING, resolved relative
+    /// to the agent's own executable; the vaults root is the same user-domain path
+    /// the app uses, so the agent enumerates the exact same vaults. Same compiled-in
+    /// helper hash ⇒ the agent's HelperRunner preflight is as strict as the app's.
+    /// Returns nil if the executable location can't be resolved (agent fails closed).
+    static func resealAgent() -> AppEnvironment? {
+        guard let exe = Bundle.main.executableURL else { return nil }
+        let helper = exe.deletingLastPathComponent().appendingPathComponent("vaultseal")
+        let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                               in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let root = support.appendingPathComponent("EncryptedVault", isDirectory: true)
         return AppEnvironment(vaultsRoot: root, helperURL: helper,
                               compiledHelperSHA256: BundledHelper.sha256)
     }
