@@ -23,7 +23,7 @@ struct VaultMeta: Codable, Equatable {
 /// and its decoded metadata. A missing/garbled meta.json yields a safe default
 /// label rather than hiding the vault — a metadata problem must never make a
 /// vault with a real vault.dat disappear from the list.
-struct VaultEntry: Equatable {
+struct VaultEntry: Equatable, Identifiable {
     let id: String
     let dir: URL
     let meta: VaultMeta
