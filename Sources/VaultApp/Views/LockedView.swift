@@ -14,7 +14,7 @@ import SwiftUI
 
 struct LockedView: View {
     let info: LockScreenInfo
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var vault: VaultModel
     @State private var showLog = false
 
     var body: some View {
@@ -37,7 +37,7 @@ struct LockedView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if info.canRetry {
-                Button("Check again") { model.reload() }
+                Button("Check again") { vault.reload() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -55,7 +55,7 @@ struct LockedView: View {
         .glassCard()
         .frame(maxWidth: 420)
         .padding(VaultUI.screenPadding)
-        .sheet(isPresented: $showLog) { DiagnosticsView() }
+        .sheet(isPresented: $showLog) { DiagnosticsView(log: vault.diagnosticsLog) }
     }
 
     private var icon: String {

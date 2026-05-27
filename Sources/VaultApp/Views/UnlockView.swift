@@ -7,7 +7,7 @@
 import SwiftUI
 
 struct UnlockView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var vault: VaultModel
     @State private var password = ""
 
     var body: some View {
@@ -22,7 +22,7 @@ struct UnlockView: View {
                 .frame(maxWidth: 300)
                 .padding(.top, 4)
 
-            if let err = model.unlockError {
+            if let err = vault.unlockError {
                 Text(err).font(.callout).foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
@@ -43,6 +43,6 @@ struct UnlockView: View {
         guard !password.isEmpty else { return }
         let entered = password
         password = ""                      // drop the field copy immediately
-        model.unlock(password: entered)
+        vault.unlock(password: entered)
     }
 }

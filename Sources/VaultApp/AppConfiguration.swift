@@ -1,12 +1,23 @@
-// AppConfiguration.swift — Task 9: where the app's files and the bundled helper
-// live, plus the user-editable schedule (windows) and its persistence. None of
-// this is secret: paths, the helper hash (integrity, not a key), and the daily
-// window times. The schedule is stored as plain JSON beside the vault.
+// AppConfiguration.swift — where each VAULT's files and the bundled helper live,
+// plus the per-vault schedule (windows) and its persistence, and the app-global
+// AppEnvironment that ties together the vaults root and shared (non-vault) files.
+// None of this is secret: paths, the helper hash (integrity, not a key), and the
+// daily window times. The schedule is stored as plain JSON beside its vault.
+//
+// Multi-vault layout (one subdirectory per vault under the root):
+//   EncryptedVault/                 ← AppEnvironment.vaultsRoot
+//     ui.json                       ← app-global appearance (shared by all vaults)
+//     app.log                       ← app-scope diagnostics (launch / agent install)
+//     <uuid>/                       ← one vault (AppConfiguration.vaultDir)
+//       vault.dat, vault.dat.bak
+//       schedule.json               ← this vault's windows
+//       diagnostics.log             ← this vault's secret-free trail
+//       meta.json                   ← this vault's label (VaultRegistry)
 
 import Foundation
 
-/// Filesystem + bundled-helper locations. `.live` is the shipped configuration;
-/// the helper hash is compiled in by the Task 11 bundling step.
+/// Per-VAULT filesystem + bundled-helper locations. A vault is self-contained in
+/// its `vaultDir`; everything below is resolved relative to it.
 struct AppConfiguration {
     /// The vault directory (created 0700, excluded from OS backups by VaultStore).
     let vaultDir: URL
@@ -17,26 +28,11 @@ struct AppConfiguration {
     /// `BundledHelper.sha256`, which `build.sh` injects; empty in a non-bundled
     /// build, which makes the launch preflight fail closed by design.
     let compiledHelperSHA256: [UInt8]
-    /// Where the (non-secret) schedule preferences are persisted.
+    /// Where this vault's (non-secret) schedule preferences are persisted.
     var schedulePrefsURL: URL { vaultDir.appendingPathComponent("schedule.json") }
-    /// Where the cosmetic UI preferences (appearance) are persisted. A SEPARATE
-    /// file from the schedule so a UI-prefs decode failure never clobbers windows.
-    var uiPrefsURL: URL { vaultDir.appendingPathComponent("ui.json") }
-    /// Where the SECRET-FREE diagnostics trail lives (app + agent append here;
+    /// Where this vault's SECRET-FREE diagnostics trail lives (app + agent append;
     /// DiagnosticsView reads it). Non-secret by construction — see DiagnosticLog.
     var diagnosticsLogURL: URL { vaultDir.appendingPathComponent("diagnostics.log") }
-
-    static var live: AppConfiguration {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = support.appendingPathComponent("EncryptedVault", isDirectory: true)
-        // Inside the .app: Contents/Helpers/vaultseal (Task 11 lays this out).
-        let helper = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Helpers/vaultseal")
-        return AppConfiguration(vaultDir: dir, helperURL: helper,
-                                compiledHelperSHA256: BundledHelper.sha256)
-    }
 
     /// Configuration for the headless re-seal agent (Contents/Helpers/vaultreseal).
     /// The agent is NOT the .app — it runs as a loose executable nested in the
@@ -55,6 +51,50 @@ struct AppConfiguration {
         let dir = support.appendingPathComponent("EncryptedVault", isDirectory: true)
         return AppConfiguration(vaultDir: dir, helperURL: helper,
                                 compiledHelperSHA256: BundledHelper.sha256)
+    }
+}
+
+/// APP-GLOBAL locations shared across all vaults: the vaults root (parent of every
+/// per-vault subdirectory), the bundled helper + its compiled-in hash, and the
+/// non-vault files that live at the root (appearance, app-scope diagnostics).
+/// Per-vault `AppConfiguration`s are derived from a vault's directory.
+struct AppEnvironment {
+    /// …/Application Support/EncryptedVault — the parent of all vault subdirs.
+    let vaultsRoot: URL
+    let helperURL: URL
+    let compiledHelperSHA256: [UInt8]
+
+    /// App-global cosmetic appearance (shared by every vault), at the root — NOT
+    /// inside any vault, so deleting a vault never disturbs it.
+    var uiPrefsURL: URL { vaultsRoot.appendingPathComponent("ui.json") }
+    /// App-scope diagnostics (launch, agent registration) — events not tied to a
+    /// single vault. A distinct file from any vault's diagnostics.log, and not
+    /// removed by the legacy-purge.
+    var appLogURL: URL { vaultsRoot.appendingPathComponent("app.log") }
+
+    /// The registry over the root (enumerate / create / delete / rename vaults).
+    var registry: VaultRegistry { VaultRegistry(root: vaultsRoot) }
+
+    /// The per-vault configuration for a given vault directory / entry.
+    func configuration(forVaultDir dir: URL) -> AppConfiguration {
+        AppConfiguration(vaultDir: dir, helperURL: helperURL,
+                         compiledHelperSHA256: compiledHelperSHA256)
+    }
+    func configuration(for entry: VaultEntry) -> AppConfiguration {
+        configuration(forVaultDir: entry.dir)
+    }
+
+    /// The shipped environment; the helper hash is compiled in at bundling time
+    /// (empty in a non-bundled build ⇒ every vault's preflight fails closed).
+    static var live: AppEnvironment {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                               in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let root = support.appendingPathComponent("EncryptedVault", isDirectory: true)
+        // Inside the .app: Contents/Helpers/vaultseal (Task 11 lays this out).
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/vaultseal")
+        return AppEnvironment(vaultsRoot: root, helperURL: helper,
+                              compiledHelperSHA256: BundledHelper.sha256)
     }
 }
 

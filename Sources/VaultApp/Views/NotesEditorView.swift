@@ -13,7 +13,8 @@
 import SwiftUI
 
 struct NotesEditorView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var vault: VaultModel
+    @EnvironmentObject private var app: AppModel
     @State private var showSettings = false
 
     var body: some View {
@@ -34,14 +35,20 @@ struct NotesEditorView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Label("Vault open", systemImage: "lock.open.fill")
+            // Leaving the open vault seals it first (closeCurrent → sealForQuit).
+            Button { app.closeCurrent() } label: {
+                Label("Vaults", systemImage: "chevron.left")
+            }
+            .buttonStyle(.borderless)
+            .help("Lock and return to your vaults")
+            Label(vault.label, systemImage: "lock.open.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
             Spacer()
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless)
                 .help("Settings")
-            Button("Lock now") { model.lock() }
+            Button("Lock now") { vault.lock() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("l", modifiers: [.command])
                 .help("Re-seal the vault until the next window")
@@ -53,13 +60,13 @@ struct NotesEditorView: View {
     private var secretsSection: some View {
         SectionCard(title: "Secrets", systemImage: "key.fill") {
             VStack(alignment: .leading, spacing: 10) {
-                ForEach($model.content.secrets) { $secret in
+                ForEach($vault.content.secrets) { $secret in
                     SecretRow(secret: $secret) {
-                        model.content.secrets.removeAll { $0.id == secret.id }
+                        vault.content.secrets.removeAll { $0.id == secret.id }
                     }
                 }
                 Button {
-                    model.content.secrets.append(VaultSecret(label: ""))
+                    vault.content.secrets.append(VaultSecret(label: ""))
                 } label: { Label("Add secret", systemImage: "plus") }
                     .buttonStyle(.borderless)
             }
@@ -69,7 +76,7 @@ struct NotesEditorView: View {
     private var notesSection: some View {
         SectionCard(title: "Notes", systemImage: "note.text") {
             // Hardened NSTextView — no spellcheck/data-detectors/undo persistence.
-            HardenedTextEditor(text: $model.content.notes)
+            HardenedTextEditor(text: $vault.content.notes)
                 .frame(minHeight: 160)
         }
     }

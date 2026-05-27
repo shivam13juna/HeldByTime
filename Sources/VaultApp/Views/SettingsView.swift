@@ -7,7 +7,8 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var model: AppModel   // app-global appearance
+    @EnvironmentObject private var vault: VaultModel // this vault's schedule + log
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SchedulePrefs = .default
     @State private var showLog = false
@@ -71,7 +72,7 @@ struct SettingsView: View {
                 Button("Cancel") { dismiss() }
                     .controlSize(.large)
                 Button("Save") {
-                    model.applySchedule(draft)
+                    vault.applySchedule(draft)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -82,8 +83,8 @@ struct SettingsView: View {
             .padding(16)
         }
         .frame(width: 480, height: 460)
-        .onAppear { draft = model.schedulePrefs }
-        .sheet(isPresented: $showLog) { DiagnosticsView() }
+        .onAppear { draft = vault.schedulePrefs }
+        .sheet(isPresented: $showLog) { DiagnosticsView(log: vault.diagnosticsLog) }
     }
 }
 
