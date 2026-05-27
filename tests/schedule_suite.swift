@@ -42,6 +42,7 @@ func runScheduleSuite() {
     roundForTimeTests()
     basicSelectionTests()
     skipForwardTests()
+    creationFloorTests()
     multiWindowTests()
     midnightCrossingTests()
     dstTests()
@@ -137,6 +138,37 @@ private func skipForwardTests() {
         sck("skip/freshness-skips-to-tomorrow", d.startDate == at(c, 2026, 6, 16, 4, 0),
             "\(d.startDate)")
     } else { sck("skip/freshness-skips-to-tomorrow", false, "no decision") }
+}
+
+// MARK: - First creation honors the soonest window (no minimum-lock floor)
+
+private func creationFloorTests() {
+    let c = cal("UTC")
+    let s = Schedule(windows: [win(4, 0, 5, 0)], calendar: c)
+
+    // Same inputs as skip/min-lock-skips-to-tomorrow: 30 min before open. The
+    // default (re-seal) path skips to tomorrow; first creation
+    // (enforceMinLock: false) honors TODAY's near window — it only clears freshness.
+    let near = at(c, 2026, 6, 15, 3, 30)
+    let latest = TrustedTime.expectedRound(at: near)
+    if case .success(let d) = s.nextLock(now: near, verifiedLatest: latest, enforceMinLock: false) {
+        sck("create/honors-near-window-today", d.startDate == at(c, 2026, 6, 15, 4, 0), "\(d.startDate)")
+    } else { sck("create/honors-near-window-today", false, "no decision") }
+
+    // The default path on the same inputs still skips to tomorrow (floor intact
+    // for re-seals — the within-window lock-then-reopen guard).
+    if case .success(let d) = s.nextLock(now: near, verifiedLatest: latest) {
+        sck("create/reseal-floor-intact", d.startDate == at(c, 2026, 6, 16, 4, 0), "\(d.startDate)")
+    } else { sck("create/reseal-floor-intact", false, "no decision") }
+
+    // Freshness STILL applies at creation: a verifiedLatest just below today's
+    // start round is rejected even with the min-lock floor off → skip to tomorrow.
+    let now = at(c, 2026, 6, 15, 0, 0)
+    let todayStartRound = TrustedTime.roundForTime(at: at(c, 2026, 6, 15, 4, 0))
+    let staleLatest = todayStartRound + 5   // today's start <= latest + margin(20)
+    if case .success(let d) = s.nextLock(now: now, verifiedLatest: staleLatest, enforceMinLock: false) {
+        sck("create/freshness-still-applies", d.startDate == at(c, 2026, 6, 16, 4, 0), "\(d.startDate)")
+    } else { sck("create/freshness-still-applies", false, "no decision") }
 }
 
 // MARK: - Multiple windows: soonest VALID start wins

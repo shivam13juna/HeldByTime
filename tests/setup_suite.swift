@@ -311,8 +311,11 @@ private func firstRunSetupTests() {
         guard case .success(let report) = r else { suk("create/succeeds", false); return }
         suk("create/succeeds", fake.sealCalls == 1)
         suk("create/window-is-forward", report.createdWindow.startRound > R)
-        suk("create/respects-min-lock",
-            report.createdWindow.startRound - R >= UInt64(VaultConstants.MIN_LOCK_DURATION_ROUNDS))
+        // First creation does NOT enforce the minimum-lock floor (it honors the
+        // soonest future window — proven in schedule_suite create/*). It MUST
+        // still clear the freshness margin, or the helper would reject the seal.
+        suk("create/clears-freshness",
+            report.createdWindow.startRound > R + UInt64(VaultConstants.FRESHNESS_MARGIN_ROUNDS))
 
         // Right after creation the vault is future-locked: no access.
         var lockedNow = false
