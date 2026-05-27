@@ -106,8 +106,11 @@ struct FirstRunSetup {
         case .success(let i): info = i
         case .failure(let e): return .failure(.helper(e))
         }
+        // First creation: honor the soonest future window (no minimum-lock floor;
+        // there is no prior commitment to protect). Re-seals keep the floor.
         let decision: ScheduleDecision
-        switch store.schedule.nextLock(now: store.clock(), verifiedLatest: info.round) {
+        switch store.schedule.nextLock(now: store.clock(), verifiedLatest: info.round,
+                                       enforceMinLock: false) {
         case .success(let d): decision = d
         case .failure(let e): return .failure(.schedule(e))
         }

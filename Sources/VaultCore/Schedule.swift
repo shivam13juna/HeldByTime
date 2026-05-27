@@ -90,7 +90,16 @@ struct Schedule {
 
     /// Compute the next valid lock target. `now` is the moment of locking;
     /// `verifiedLatest` is the max round verified across drand endpoints (§9).
-    func nextLock(now: Date, verifiedLatest: UInt64) -> Result<ScheduleDecision, ScheduleError> {
+    ///
+    /// `enforceMinLock` gates the 1-hour minimum-lock floor. It is `true` for
+    /// every re-seal (window-end, Lock, defensive) so a near window can't be used
+    /// to lock-then-reopen with a near-zero commitment. It is `false` only at
+    /// FIRST creation, where there is no prior commitment to protect: the user is
+    /// freely choosing the first window, so the soonest future occurrence is
+    /// honored (still subject to the freshness floor). This does NOT weaken the
+    /// crypto lock — it only governs how short a brand-new commitment may be.
+    func nextLock(now: Date, verifiedLatest: UInt64,
+                  enforceMinLock: Bool = true) -> Result<ScheduleDecision, ScheduleError> {
         guard !windows.isEmpty else { return .failure(.noWindows) }
 
         let nowRound = TrustedTime.expectedRound(at: now)
@@ -111,7 +120,8 @@ struct Schedule {
                 let endRound = TrustedTime.roundForTime(at: endDate)
                 guard endRound > startRound else { sawDegenerate = true; continue }
 
-                if isValidStart(startRound: startRound, nowRound: nowRound, verifiedLatest: verifiedLatest) {
+                if isValidStart(startRound: startRound, nowRound: nowRound,
+                                verifiedLatest: verifiedLatest, enforceMinLock: enforceMinLock) {
                     let candidate = ScheduleDecision(startRound: startRound, endRound: endRound,
                                                      startDate: startDate, endDate: endDate)
                     if best == nil || candidate.startRound < best!.startRound {
@@ -132,16 +142,22 @@ struct Schedule {
 
     // MARK: - Validity floors
 
-    private func isValidStart(startRound: UInt64, nowRound: UInt64, verifiedLatest: UInt64) -> Bool {
-        // Freshness: the helper rejects target <= latest + margin, so we must clear it.
+    private func isValidStart(startRound: UInt64, nowRound: UInt64, verifiedLatest: UInt64,
+                              enforceMinLock: Bool) -> Bool {
+        // Freshness: the helper rejects target <= latest + margin, so we must clear
+        // it. This floor ALWAYS applies (creation and re-seal), or sealing wedges.
         let margin = UInt64(VaultConstants.FRESHNESS_MARGIN_ROUNDS)
         let (freshThreshold, fo) = verifiedLatest.addingReportingOverflow(margin)
         if fo || startRound <= freshThreshold { return false }
 
-        // Minimum lock duration measured from the local-clock round.
-        let minLock = UInt64(VaultConstants.MIN_LOCK_DURATION_ROUNDS)
-        let (lockThreshold, lo) = nowRound.addingReportingOverflow(minLock)
-        if lo || startRound < lockThreshold { return false }
+        // Minimum lock duration measured from the local-clock round. Applies to
+        // re-seals only (see nextLock docs); at first creation the soonest valid
+        // window is honored without this floor.
+        if enforceMinLock {
+            let minLock = UInt64(VaultConstants.MIN_LOCK_DURATION_ROUNDS)
+            let (lockThreshold, lo) = nowRound.addingReportingOverflow(minLock)
+            if lo || startRound < lockThreshold { return false }
+        }
 
         return true
     }
