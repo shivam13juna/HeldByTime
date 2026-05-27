@@ -35,6 +35,7 @@ helper. Legs (each prints a `RESULT:` line):
 | defensive re-seal | `e2e/seal-short-window`, `e2e/reached-expiry`, `e2e/defensive-reseal`, `e2e/defensive-forward`, `e2e/relocked-after-defensive` | an **expired** vault (force-kill analogue) is re-sealed forward **passwordlessly** on next launch |
 | offline | `e2e/offline-failclosed` | the real helper behind a dead proxy fails closed (non-zero, empty stdout, closed-domain error) |
 | no leak (scratch) | `e2e/no-plaintext-interactive`, `e2e/no-plaintext-defensive`, `e2e/files-0600` | scratch vault files hold only sealed bytes; mode 0600 |
+| multi-vault | `e2e/multivault-sealed`, `e2e/multivault-enumerated`, `e2e/multivault-each-locked`, `e2e/multivault-delete-isolated`, `e2e/multivault-no-plaintext` | two real vaults under one root are enumerated by the registry, each **independently** locked; deleting one leaves the other intact (the shape the re-seal agent iterates) |
 
 Expected tail: `E2E: all live legs passed.` and exit 0.
 

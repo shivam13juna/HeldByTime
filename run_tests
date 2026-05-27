@@ -408,7 +408,8 @@ if [ -f "$E2E_MAIN" ]; then
   fi
   # (b) Still covers each required leg (the RESULT names the checklist depends on).
   for needle in 'e2e/locked-before-window' 'e2e/opens-at-round' 'e2e/interactive-reseal-forward' \
-                'e2e/defensive-reseal' 'e2e/offline-failclosed' 'e2e/no-plaintext'; do
+                'e2e/defensive-reseal' 'e2e/offline-failclosed' 'e2e/no-plaintext' \
+                'e2e/multivault-each-locked'; do
     if ! grep -qF "$needle" "$E2E_MAIN"; then
       emit FAIL e2e/leg-missing "$E2E_MAIN no longer covers leg: $needle"
       e2e_ok=0

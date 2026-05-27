@@ -25,6 +25,9 @@
 //      fails closed (non-zero exit, empty stdout, closed-domain error on stderr).
 //   6. no durable plaintext          -> after every write, the scratch vault files
 //      hold only sealed bytes (sentinel absent) and are mode 0600.
+//   7. multi-vault                    -> two real vaults under one root, enumerated
+//      by VaultRegistry, each independently locked; deleting one leaves the other
+//      intact (the shape the re-seal agent iterates).
 //
 // Throwaway sentinel payload + scratch dirs ONLY — never a real secret. The real
 // admin / Canopy passwords are entered only via the GUI first-run (see E2E.md);
@@ -271,6 +274,59 @@ check("e2e/no-plaintext-defensive", !diskContains(dir2, sentinel),
 let m1 = fileMode(dir1.appendingPathComponent("vault.dat"))
 let m2 = fileMode(dir2.appendingPathComponent("vault.dat"))
 check("e2e/files-0600", m1 == 0o600 && m2 == 0o600, "modes: primary1=\(m1.map{String($0,radix:8)} ?? "nil") primary2=\(m2.map{String($0,radix:8)} ?? "nil")")
+
+// ======================================================================
+// LEG 7 — multi-vault: TWO real vaults under one root, sealed via the real helper
+// to different near-future rounds, enumerated by VaultRegistry and each
+// independently time-locked. This is the exact shape the re-seal agent iterates
+// (env.registry.list() → per-vault load()); here we prove against the real network
+// that the registry discovers both, that each vault's gate is independent, and that
+// deleting one leaves the other intact (no shared state, no cross-contamination).
+// ======================================================================
+guard let r3 = latestRound() else {
+    fail("e2e/current-round-3", "real helper current-round failed before leg 7")
+    exit(1)
+}
+let mvRoot = scratch("multivault")
+let registry = VaultRegistry(root: mvRoot)
+guard case .success(let vaultA) = registry.create(label: "Vault A"),
+      case .success(let vaultB) = registry.create(label: "Vault B") else {
+    fail("e2e/multivault-create", "VaultRegistry.create failed")
+    exit(1)
+}
+// Different start rounds so the two vaults are genuinely distinct seals.
+let sealedA = sealVault(vaultA.dir, start: r3 + 30, end: r3 + 60, latest: r3)
+let sealedB = sealVault(vaultB.dir, start: r3 + 40, end: r3 + 70, latest: r3)
+check("e2e/multivault-sealed", sealedA && sealedB, "sealing one or both vaults failed")
+
+// The registry discovers BOTH sealed vaults (a dir with a vault.dat IS a vault).
+let listed = registry.list()
+check("e2e/multivault-enumerated",
+      listed.count == 2 && listed.contains { $0.id == vaultA.id }
+                        && listed.contains { $0.id == vaultB.id },
+      "registry did not enumerate both vaults (got \(listed.count))")
+
+// Each vault is independently locked before its own window — the per-vault gate
+// the agent relies on. One vault's state never authorizes the other.
+var eachLocked = !listed.isEmpty
+for entry in listed {
+    if case .lockedUntil = makeStore(entry.dir).load().result { continue }
+    eachLocked = false
+}
+check("e2e/multivault-each-locked", eachLocked,
+      "every enumerated vault must be lockedUntil before its window")
+
+// Isolation: permanently deleting one vault leaves the other fully intact.
+if case .failure(let err) = registry.delete(id: vaultA.id) {
+    fail("e2e/multivault-delete-isolated", "delete failed: \(err)")
+} else {
+    let after = registry.list()
+    check("e2e/multivault-delete-isolated",
+          after.count == 1 && after.first?.id == vaultB.id,
+          "deleting Vault A must leave exactly Vault B")
+}
+check("e2e/multivault-no-plaintext", !diskContains(vaultB.dir, sentinel),
+      "sentinel present in a sealed multi-vault blob")
 
 // MARK: - verdict
 if failures == 0 {

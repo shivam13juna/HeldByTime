@@ -163,20 +163,15 @@ final class AppModel: ObservableObject {
     /// Every log line — the app-scope log plus each vault's diagnostics.log —
     /// merged into one chronological list, each line prefixed with its source
     /// (the app, or the vault's label). All of it is secret-free by construction
-    /// (DiagnosticLog / I13). Sorted by the ISO-8601 timestamp every line begins
-    /// with: the formats are identical across logs, so lexical order is chronological.
+    /// (DiagnosticLog / I13). The merge/sort/tag is the engine's `DiagnosticLog.merge`
+    /// (pure + unit-tested); here we only gather each log's tail and its tag.
     func mergedLogLines() -> [String] {
-        var tagged: [(key: String, decorated: String)] = []
-        for line in appLog.tail() {
-            tagged.append((line, "[\(Self.appLogTag)] \(line)"))
-        }
+        var groups: [(tag: String, lines: [String])] = [(Self.appLogTag, appLog.tail())]
         for entry in entries {
             let log = DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
-            for line in log.tail() {
-                tagged.append((line, "[\(entry.meta.label)] \(line)"))
-            }
+            groups.append((entry.meta.label, log.tail()))
         }
-        return tagged.sorted { $0.key < $1.key }.map(\.decorated)
+        return DiagnosticLog.merge(groups)
     }
 
     /// Clear the app-scope log and every vault's diagnostics.log. All non-secret;
