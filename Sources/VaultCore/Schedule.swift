@@ -140,6 +140,21 @@ struct Schedule {
                         ? .degenerateWindow : .noValidStartWithinHorizon)
     }
 
+    // MARK: - Advisory display (NOT authorization)
+
+    /// DISPLAY ONLY — the next wall-clock instant at which some window opens, at or
+    /// after `now`, in the schedule's time zone. It ignores rounds, the freshness
+    /// margin, and the minimum-lock floor: it answers "when does a window next
+    /// open?" for the home-screen hint ("opens at …"), nothing more.
+    ///
+    /// This NEVER authorizes access. The cryptographic gate is the manifest round
+    /// resolved by `VaultStore.load()` (unseal-is-the-gate); a local clock pushed
+    /// forward changes only this advisory text, not whether the blob unseals.
+    /// Returns nil if there are no windows.
+    func nextWindowOpening(after now: Date) -> Date? {
+        windows.compactMap { nextOccurrence(of: $0.start, after: now) }.min()
+    }
+
     // MARK: - Validity floors
 
     private func isValidStart(startRound: UInt64, nowRound: UInt64, verifiedLatest: UInt64,
