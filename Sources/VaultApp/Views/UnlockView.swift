@@ -21,18 +21,29 @@ struct UnlockView: View {
             RevealableSecureField(placeholder: "Vault password", text: $password, onSubmit: submit)
                 .frame(maxWidth: 300)
                 .padding(.top, 4)
+                .disabled(vault.isUnlocking)
 
             if let err = vault.unlockError {
                 Text(err).font(.callout).foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
 
-            Button("Unlock", action: submit)
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(password.isEmpty)
-                .padding(.top, 4)
+            Button(action: submit) {
+                if vault.isUnlocking {
+                    // Honest spinner: Argon2id is deliberately slow — show it working.
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Unlocking…")
+                    }
+                } else {
+                    Text("Unlock")
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(password.isEmpty || vault.isUnlocking)
+            .padding(.top, 4)
         }
         .glassCard()
         .frame(maxWidth: 380)
@@ -40,7 +51,7 @@ struct UnlockView: View {
     }
 
     private func submit() {
-        guard !password.isEmpty else { return }
+        guard !password.isEmpty, !vault.isUnlocking else { return }
         let entered = password
         password = ""                      // drop the field copy immediately
         vault.unlock(password: entered)

@@ -36,7 +36,7 @@ struct VaultListView: View {
             }
         }
         .padding(VaultUI.screenPadding)
-        .frame(maxWidth: 560, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: 820, maxHeight: .infinity, alignment: .top)
         .onAppear { model.refreshEntries() }
         .sheet(isPresented: $showMergedLog) {
             MergedLogView(loadLines: { model.mergedLogLines() },
@@ -114,8 +114,10 @@ struct VaultListView: View {
 }
 
 /// One row in the vault list: lock glyph, label, and the ADVISORY next-window
-/// opening, plus a per-vault menu (Rename / Delete). The label area opens the
-/// vault on tap; the menu is a separate control so it doesn't trigger an open.
+/// opening, followed by three explicit per-vault actions — rename, delete, and
+/// open — each a labelled icon button. No hidden menu and no row-wide tap target:
+/// opening a vault is an intentional click on its own control (the only path to
+/// that vault's authoritative lock screen).
 struct VaultRow: View {
     let entry: VaultEntry
     /// Advisory next scheduled opening (wall clock). DISPLAY ONLY — never the real
@@ -127,40 +129,46 @@ struct VaultRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: onOpen) {
-                HStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.meta.label)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        advisory
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption).foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.meta.label)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                advisory
             }
-            .buttonStyle(.plain)
 
-            Menu {
-                Button { onRename() } label: { Label("Rename…", systemImage: "pencil") }
-                Divider()
-                Button(role: .destructive) { onDelete() } label: {
-                    Label("Delete…", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+            // Delete sits here, in the quiet zone by the name — deliberately far
+            // from the Open button the user reaches for, since deletion is
+            // permanent and irreversible. It is a quiet icon, not a target.
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.red)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Rename or delete this vault")
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .padding(.leading, 4)
+            .help("Permanently delete this vault")
+
+            Spacer()
+
+            // The two intentional actions, grouped on the right.
+            Button(action: onRename) {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .foregroundStyle(.secondary)
+            .help("Rename this vault")
+
+            Button(action: onOpen) {
+                Label("Open", systemImage: "lock.open")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .padding(.leading, 4)
+            .help("Open this vault")
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)

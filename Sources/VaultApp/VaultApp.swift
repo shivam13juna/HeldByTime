@@ -21,7 +21,7 @@ struct VaultApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .frame(minWidth: 460, minHeight: 420)
+                .frame(minWidth: 700, minHeight: 600)
                 .onAppear {
                     appDelegate.model = model
                     model.bootstrap()
@@ -103,8 +103,21 @@ struct VaultRootView: View {
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        phaseView
-            .overlay(alignment: .topLeading) { backButton }
+        VStack(spacing: 0) {
+            // A dedicated header row for the back control on every sealed state, so
+            // it can never overlap the centered lock card. The open editor draws its
+            // own "Vaults" header, so we add nothing above it.
+            if !isUnlocked {
+                HStack {
+                    backButton
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            phaseView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     @ViewBuilder
@@ -125,15 +138,12 @@ struct VaultRootView: View {
 
     /// Shown for every state except the open editor (which has its own header
     /// with a "Vaults" button). Leaving an open editor seals first (closeCurrent).
-    @ViewBuilder
     private var backButton: some View {
-        if !isUnlocked {
-            Button { app.closeCurrent() } label: {
-                Label("Vaults", systemImage: "chevron.left")
-            }
-            .buttonStyle(.borderless)
-            .padding(12)
+        Button { app.closeCurrent() } label: {
+            Label("All vaults", systemImage: "chevron.left")
         }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     private var isUnlocked: Bool {

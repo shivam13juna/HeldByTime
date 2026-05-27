@@ -90,8 +90,18 @@ final class AppModel: ObservableObject {
     }
 
     /// Leave the current vault and return to the list, sealing first if it is open.
+    /// When unlocked, the seal is networked, so it runs off the main thread (the
+    /// editor shows a "Sealing…" overlay) and we navigate once it completes — best
+    /// effort, like quit: a failed seal is closed by the launch-time / agent
+    /// defensive re-seal, never left silently unsealed.
     func closeCurrent() {
-        if case .open(let vm) = screen { vm.sealForQuit() }
+        if case .open(let vm) = screen, vm.isUnlocked {
+            vm.sealInteractively(trigger: .gracefulQuit) { [weak self] _ in
+                self?.refreshEntries()
+                self?.screen = .list
+            }
+            return
+        }
         refreshEntries()
         screen = .list
     }

@@ -31,15 +31,31 @@ struct NotesEditorView: View {
         }
         .frame(minWidth: 480, minHeight: 460)
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .overlay { if vault.isSealing { sealingOverlay } }
+    }
+
+    /// Shown while the (networked) re-seal runs off the main thread — so leaving or
+    /// locking the vault gives honest feedback instead of a frozen window.
+    private var sealingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.25).ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Sealing the vault…").font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(28)
+            .glassCard()
+        }
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            // Leaving the open vault seals it first (closeCurrent → sealForQuit).
+            // Leaving the open vault seals it first (closeCurrent re-seals off-main).
             Button { app.closeCurrent() } label: {
                 Label("Vaults", systemImage: "chevron.left")
             }
             .buttonStyle(.borderless)
+            .disabled(vault.isSealing)
             .help("Lock and return to your vaults")
             Label(vault.label, systemImage: "lock.open.fill")
                 .font(.headline)
@@ -47,10 +63,12 @@ struct NotesEditorView: View {
             Spacer()
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless)
+                .disabled(vault.isSealing)
                 .help("Settings")
-            Button("Lock now") { vault.lock() }
+            Button("Lock now") { vault.sealInteractively(trigger: .lockButton) { _ in } }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("l", modifiers: [.command])
+                .disabled(vault.isSealing)
                 .help("Re-seal the vault until the next window")
         }
         .padding(.horizontal, 16)
