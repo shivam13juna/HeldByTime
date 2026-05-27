@@ -129,11 +129,13 @@ Argon2 params, salt, or nonce therefore fails authentication.
 
 - **Password encoding:** UTF-8 bytes of the exact characters entered. **No trimming,
   no Unicode normalization, no case folding.** Reject empty. Reject if the UTF-8
-  encoding exceeds `MAX_PASSWORD_BYTES`.
-- **Minimum length:** reject if the entered password has fewer than
-  `MIN_PASSWORD_LENGTH` Unicode scalar values (a hard gate, distinct from the
-  byte cap). A separate weak-password *warning* (lightweight heuristic, no external
-  dependency) may advise but does not block above the minimum.
+  encoding exceeds `MAX_PASSWORD_BYTES`. These are the only **hard gates** — empty is
+  a non-submittable dead-end, and the byte cap is an Argon2/format limit.
+- **Minimum length:** `MIN_PASSWORD_LENGTH` is the **recommended** minimum, **not a
+  hard gate**. Password strength is the owner's call; a short (non-empty) password is
+  accepted. A weak-password *warning* (lightweight length/variety heuristic, no
+  external dependency) advises inline and, if still weak, the UI asks the owner to
+  confirm "create anyway" — but it never prohibits.
 - **Salt and nonce:** drawn from the system CSPRNG, **fresh for every encryption**;
   never reused across saves. `ARGON2_SALT_LEN` and `GCM_NONCE_LEN` bytes respectively.
 - **KDF:** Argon2id only (`ARGON2_M_KIB`/`ARGON2_T`/`ARGON2_P`/`ARGON2_VERSION`,

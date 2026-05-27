@@ -8,18 +8,23 @@
 //   1. encode  — the exact, lossless UTF-8 byte path into Argon2 (no trim, no
 //      Unicode normalization, no case folding). A "same-looking but different
 //      bytes" confirm can therefore never silently produce an unopenable vault.
-//   2. validate — reject empty / below MIN_PASSWORD_LENGTH scalars / above
-//      MAX_PASSWORD_BYTES. These are HARD gates.
+//   2. validate — reject empty / above MAX_PASSWORD_BYTES. These are the only HARD
+//      gates: an empty password is a dead-end (the unlock field can't submit it),
+//      and the byte cap is an Argon2/format limit. Password STRENGTH is NOT a hard
+//      gate — it is the owner's call. The minimum length is advisory only (see #3);
+//      we warn, we never prohibit (the user owns the strength/usability tradeoff).
 //   3. weaknessWarning — a blunt, dependency-free length/variety heuristic that
-//      ADVISES above the minimum but never blocks (no vendored zxcvbn — an extra
-//      dependency + attack surface a zero-fallback vault doesn't need).
+//      ADVISES (recommending at least MIN_PASSWORD_LENGTH) but never blocks (no
+//      vendored zxcvbn — an extra dependency + attack surface a zero-fallback vault
+//      doesn't need). The UI surfaces it inline and, if still weak, asks the owner
+//      to confirm "create anyway".
 
 import Foundation
 
-/// Why a password was rejected (hard gates only; the weakness warning is advisory).
+/// Why a password was rejected. Hard gates only — STRENGTH is advisory (see
+/// `weaknessWarning`), never a rejection reason.
 enum PasswordError: Error, Equatable {
     case empty
-    case tooShort(scalars: Int)   // fewer than MIN_PASSWORD_LENGTH Unicode scalars
     case tooLong(bytes: Int)      // UTF-8 encoding exceeds MAX_PASSWORD_BYTES
 }
 
@@ -33,16 +38,14 @@ enum PasswordPolicy {
     }
 
     /// Validate against the hard gates, returning the encoded key-material bytes
-    /// on success. Empty is reported as `.empty` (more specific than "too short")
-    /// even though it is also below the minimum.
+    /// on success. The ONLY rejections are empty (a non-submittable dead-end) and
+    /// over the byte cap (an Argon2/format limit). A short-but-non-empty password
+    /// is ACCEPTED here — length is advisory (see `weaknessWarning`), the owner's
+    /// call, never a block.
     static func validate(_ entered: String) -> Result<[UInt8], PasswordError> {
         let bytes = encode(entered)
         if bytes.isEmpty {
             return .failure(.empty)
-        }
-        let scalarCount = entered.unicodeScalars.count
-        if scalarCount < VaultConstants.MIN_PASSWORD_LENGTH {
-            return .failure(.tooShort(scalars: scalarCount))
         }
         if bytes.count > VaultConstants.MAX_PASSWORD_BYTES {
             return .failure(.tooLong(bytes: bytes.count))
@@ -63,6 +66,8 @@ enum PasswordPolicy {
     /// any non-ASCII, which count as variety). A long passphrase passes on
     /// length alone; a short, low-variety password is warned. This does NOT
     /// block and is NOT a dictionary check — it cannot catch "Password1234".
+    /// `MIN_PASSWORD_LENGTH` is the *recommended* minimum the heuristic leans on,
+    /// not a hard gate (validate accepts shorter — strength is the owner's call).
     static func weaknessWarning(_ entered: String) -> String? {
         var lower = false, upper = false, digit = false, other = false
         for s in entered.unicodeScalars {
@@ -79,10 +84,10 @@ enum PasswordPolicy {
         // Strong enough — no warning — if any of:
         //   • a genuinely long passphrase (≥20), regardless of variety, or
         //   • ≥16 with at least two classes, or
-        //   • ≥12 (the minimum) with at least three classes.
+        //   • ≥ the recommended minimum with at least three classes.
         if length >= 20 { return nil }
         if length >= 16 && classes >= 2 { return nil }
-        if length >= 12 && classes >= 3 { return nil }
+        if length >= VaultConstants.MIN_PASSWORD_LENGTH && classes >= 3 { return nil }
 
         return "Weak password: it is short and low-variety. "
             + "Prefer a longer passphrase, or mix uppercase, lowercase, digits, and symbols. "

@@ -21,6 +21,9 @@ final class FirstRunModel: ObservableObject {
     @Published var errorMessage: String?
     /// Set when the gate passed but with warnings; the view asks to confirm.
     @Published var pendingWarnings: [SelfTestEngine.Step]?
+    /// Set when the owner pressed Create with a weak (advisory) password; the view
+    /// asks to confirm "create anyway". Never blocks — strength is the owner's call.
+    @Published var pendingWeakPassword = false
 
     private let config: AppConfiguration
     private let onComplete: () -> Void
@@ -74,7 +77,16 @@ final class FirstRunModel: ObservableObject {
     /// Attempt to create the vault. `confirmWarnings` is passed through to the
     /// engine; when it returns `.warningsNotConfirmed` we stash the steps so the
     /// view can ask, then call again with `confirmWarnings: true`.
-    func create(confirmWarnings: Bool = false) {
+    func create(confirmWarnings: Bool = false, confirmWeak: Bool = false) {
+        // Advisory weak-password confirm (NEVER blocks): if the password is weak and
+        // the owner hasn't yet confirmed, ask once. We check before the (networked)
+        // self-test so the prompt is immediate. Passing confirmWeak through the
+        // self-test "create anyway" path keeps this from re-firing on that retry.
+        if !confirmWeak, weaknessWarning != nil {
+            pendingWeakPassword = true
+            return
+        }
+
         running = true
         errorMessage = nil
         defer { running = false }
@@ -105,7 +117,6 @@ final class FirstRunModel: ObservableObject {
     private func describe(_ e: FirstRunSetup.SetupError) -> String {
         switch e {
         case .password(.empty):            return "Enter a password."
-        case .password(.tooShort(let n)):  return "Password is too short (\(n) characters; need at least \(VaultConstants.MIN_PASSWORD_LENGTH))."
         case .password(.tooLong):          return "Password is too long."
         case .passwordMismatch:            return "The two passwords don't match exactly."
         case .dataLossNotAcknowledged:     return "Please acknowledge the data-loss warning."
@@ -171,13 +182,24 @@ struct FirstRunView: View {
             Button("Cancel", role: .cancel) { setup.pendingWarnings = nil }
             Button("Create anyway") {
                 setup.pendingWarnings = nil
-                setup.create(confirmWarnings: true)
+                setup.create(confirmWarnings: true, confirmWeak: true)
             }
         } message: {
             Text("The self-test passed but with warnings: "
                  + (setup.pendingWarnings?.map(\.rawValue).joined(separator: ", ") ?? "")
                  + ". A single reachable drand endpoint is fragile — if it is later blocked, "
                  + "the vault will not open.")
+        }
+        .alert("Create with a weak password?", isPresented: weakPasswordAlertBinding) {
+            Button("Cancel", role: .cancel) { setup.pendingWeakPassword = false }
+            Button("Create anyway") {
+                setup.pendingWeakPassword = false
+                setup.create(confirmWeak: true)
+            }
+        } message: {
+            Text((setup.weaknessWarning ?? "This password is weak.")
+                 + "\n\nYou can use it anyway — but if you forget it there is no recovery, "
+                 + "and once a window expires this password is all that protects the vault.")
         }
     }
 
@@ -189,6 +211,11 @@ struct FirstRunView: View {
     private var warningAlertBinding: Binding<Bool> {
         Binding(get: { setup.pendingWarnings != nil },
                 set: { if !$0 { setup.pendingWarnings = nil } })
+    }
+
+    private var weakPasswordAlertBinding: Binding<Bool> {
+        Binding(get: { setup.pendingWeakPassword },
+                set: { if !$0 { setup.pendingWeakPassword = false } })
     }
 
     private var passwordSection: some View {
