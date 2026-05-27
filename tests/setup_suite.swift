@@ -71,15 +71,18 @@ private func passwordPolicyTests() {
     if case .failure(.empty) = PasswordPolicy.validate("") { suk("pw/empty-rejected", true) }
     else { suk("pw/empty-rejected", false) }
 
-    // Minimum is counted in Unicode SCALARS, not bytes: 11 scalars rejected, 12 ok.
+    // Length is ADVISORY, not a hard gate: a short (non-empty) password validates.
     let elevenAcute = String(repeating: "\u{00E9}", count: 11)   // 11 scalars, 22 bytes
     let twelveAcute = String(repeating: "\u{00E9}", count: 12)   // 12 scalars, 24 bytes
-    if case .failure(.tooShort(let s)) = PasswordPolicy.validate(elevenAcute) {
-        suk("pw/too-short-by-scalars", s == 11)
-    } else { suk("pw/too-short-by-scalars", false) }
+    if case .success(let bytes) = PasswordPolicy.validate(elevenAcute) {
+        suk("pw/short-allowed", bytes.count == 22)   // accepted; length never blocks
+    } else { suk("pw/short-allowed", false) }
     if case .success(let bytes) = PasswordPolicy.validate(twelveAcute) {
         suk("pw/min-length-ok-multibyte", bytes.count == 24) // 12 scalars but 24 UTF-8 bytes
     } else { suk("pw/min-length-ok-multibyte", false) }
+    // Strength is still ADVISED: a short low-variety password warns; a long passphrase doesn't.
+    suk("pw/short-warns-advisory", PasswordPolicy.weaknessWarning("abc") != nil)
+    suk("pw/strong-no-warning", PasswordPolicy.weaknessWarning("correct horse battery staple") == nil)
 
     // Byte cap: exactly MAX_PASSWORD_BYTES ok, one more rejected.
     let maxBytes = String(repeating: "a", count: VaultConstants.MAX_PASSWORD_BYTES)
@@ -239,13 +242,23 @@ private func firstRunSetupTests() {
         return (FirstRunSetup(store: store, services: services), store, fake, dir)
     }
 
-    // Rejects an invalid password before anything else.
+    // A short (but valid: non-empty, matching, within the byte cap) password is no
+    // longer rejected — strength is advisory in the UI, not a hard gate in the engine.
     do {
         let (setup, _, fake, dir) = freshSetup(); defer { try? FileManager.default.removeItem(at: dir) }
         let r = setup.create(password: "short", confirmPassword: "short", initialNotes: notes,
                              acknowledgeDataLossWarnings: true, confirmWarnings: true)
-        var ok = false; if case .failure(.password(.tooShort)) = r { ok = true }
-        suk("create/rejects-short-password", ok && fake.sealCalls == 0)
+        var ok = false; if case .success = r { ok = true }
+        suk("create/short-password-allowed", ok && fake.sealCalls == 1)
+    }
+
+    // An empty password IS still rejected (a non-submittable dead-end).
+    do {
+        let (setup, _, fake, dir) = freshSetup(); defer { try? FileManager.default.removeItem(at: dir) }
+        let r = setup.create(password: "", confirmPassword: "", initialNotes: notes,
+                             acknowledgeDataLossWarnings: true, confirmWarnings: true)
+        var ok = false; if case .failure(.password(.empty)) = r { ok = true }
+        suk("create/rejects-empty-password", ok && fake.sealCalls == 0)
     }
 
     // Rejects a confirm mismatch.
