@@ -56,4 +56,39 @@ func runDiagnosticsSuite() {
     // Clear empties it.
     log.clear()
     check("diag/clear", log.tail().isEmpty, "clear() removes all entries")
+
+    runMergeChecks()
+}
+
+// MARK: - Merge across logs (the engine helper behind the app's merged activity view)
+
+private func runMergeChecks() {
+    // Empty inputs ⇒ no lines (no groups, and groups with no lines).
+    check("diag/merge-empty", DiagnosticLog.merge([]).isEmpty, "no groups ⇒ no lines")
+    check("diag/merge-empty-groups",
+          DiagnosticLog.merge([(tag: "A", lines: []), (tag: "B", lines: [])]).isEmpty,
+          "groups with no lines ⇒ no lines")
+
+    // Cross-group chronology: lines from different logs interleave by their ISO
+    // timestamp, NOT by group order. Synthetic distinct timestamps make it exact.
+    let a = ["2026-05-27T10:00:00Z [app] app launched",
+             "2026-05-27T10:00:30Z [app] checked vault → locked (round 100)"]
+    let b = ["2026-05-27T10:00:15Z [agent] background agent ran → locked"]
+    let merged = DiagnosticLog.merge([(tag: "Vault A", lines: a), (tag: "Vault B", lines: b)])
+
+    check("diag/merge-count", merged.count == 3, "expected 3 lines, got \(merged.count)")
+    check("diag/merge-chronological",
+          merged[0].hasPrefix("[Vault A] 2026-05-27T10:00:00Z")
+            && merged[1].hasPrefix("[Vault B] 2026-05-27T10:00:15Z")
+            && merged[2].hasPrefix("[Vault A] 2026-05-27T10:00:30Z"),
+          "lines must be ordered by timestamp across groups, not by group order")
+    check("diag/merge-tag-and-content-intact",
+          merged[1] == "[Vault B] 2026-05-27T10:00:15Z [agent] background agent ran → locked",
+          "each line keeps its source tag AND its original (untruncated) content")
+
+    // A single group preserves its own order and tags every line.
+    let single = DiagnosticLog.merge([(tag: "Solo", lines: a)])
+    check("diag/merge-single-group",
+          single == ["[Solo] " + a[0], "[Solo] " + a[1]],
+          "single group ⇒ same order, every line tagged")
 }

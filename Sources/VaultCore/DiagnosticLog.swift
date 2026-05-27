@@ -81,6 +81,24 @@ public struct DiagnosticLog {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Merge several already-read, tagged log groups into ONE chronological list.
+    /// Each group is `(tag, lines)` where `lines` is a log's `tail()` (oldest-first)
+    /// and `tag` is a NON-SECRET source label (e.g. a vault's name, or "App"). Every
+    /// line is prefixed `"[tag] "` and the whole set is ordered by the ISO-8601
+    /// timestamp each line begins with — the formats are identical across logs, so
+    /// lexical order is chronological. Pure and secret-free (inputs are already
+    /// secret-free lines + non-secret tags), so it lives in the engine and is unit-
+    /// testable headless. Used by the app's merged activity-log view.
+    public static func merge(_ groups: [(tag: String, lines: [String])]) -> [String] {
+        var tagged: [(key: String, decorated: String)] = []
+        for group in groups {
+            for line in group.lines {
+                tagged.append((key: line, decorated: "[\(group.tag)] \(line)"))
+            }
+        }
+        return tagged.sorted { $0.key < $1.key }.map(\.decorated)
+    }
+
     /// Which process emitted the line.
     public enum Source: String { case app, agent }
 
