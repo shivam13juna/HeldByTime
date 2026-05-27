@@ -1,8 +1,10 @@
 <div align="center">
 
+# 🔒 EncryptedVault
+
 <img src="assets/cover_image.png" alt="EncryptedVault" width="100%" />
 
-# 🔒 EncryptedVault
+
 
 ### Notes and secrets that open **only** during the times *you* choose — even for you.
 
