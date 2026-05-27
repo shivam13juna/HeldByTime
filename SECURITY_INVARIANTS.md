@@ -42,7 +42,7 @@ openable, defeating the commitment. The backup is always written by tmp+rename
 ## I6 — No raw expired blob is ever preserved
 A successfully-unsealed past/expired payload is never written back to disk in
 openable form. Tamper quarantine stores a **hash/diagnostic record only**, never the
-raw bytes. A valid-but-expired copy is **re-sealed forward** before any access, never
+raw bytes. A valid-but-expired copy is **re-sealed forward**/// before any access, never
 left readable.
 
 ## I7 — Defensive re-seal is strictly passwordless

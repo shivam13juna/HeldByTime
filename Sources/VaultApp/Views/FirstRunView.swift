@@ -17,8 +17,34 @@ final class FirstRunModel: ObservableObject {
     @Published var acknowledgeDataLoss = false
 
     @Published var selfTest: [SelfTestEngine.StepResult] = []
-    @Published var running = false
+    /// The networked operation in flight (nil = idle). Drives a centered modal so
+    /// the user can't miss that the app is working — and so the message matches
+    /// what they pressed (Create vs Run self-test), not a generic "self-test" line.
+    @Published var activity: Activity?
     @Published var errorMessage: String?
+
+    enum Activity { case selfTest, creating }
+
+    /// True while any networked operation is running (buttons disable on this).
+    var running: Bool { activity != nil }
+
+    /// Title/subtitle for the working popup, matching the pressed action.
+    var activityTitle: String {
+        switch activity {
+        case .creating: return "Creating your vault…"
+        case .selfTest: return "Running self-test…"
+        case nil:       return ""
+        }
+    }
+    var activitySubtitle: String {
+        switch activity {
+        case .creating: return "Setting up encryption and connecting to the time-lock "
+            + "network. This can take a few seconds."
+        case .selfTest: return "Making sure encryption works and the time-lock network "
+            + "is reachable."
+        case nil:       return ""
+        }
+    }
     /// Set when the gate passed but with warnings; the view asks to confirm.
     @Published var pendingWarnings: [SelfTestEngine.Step]?
     /// Set when the owner pressed Create with a weak (advisory) password; the view
@@ -65,12 +91,21 @@ final class FirstRunModel: ObservableObject {
     /// Run only the self-test gate (no vault write) so the user can see the
     /// per-step report before committing a password.
     func runSelfTest() {
-        running = true
+        guard !running else { return }
+        activity = .selfTest
         errorMessage = nil
-        defer { running = false }
-        switch makeSetup().runSelfTest() {
-        case .success(let results): selfTest = results
-        case .failure(let e): errorMessage = describe(e)
+        // The self-test reaches drand over the network; run it off the main thread
+        // so the popup actually animates instead of freezing the window.
+        let setup = makeSetup()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = setup.runSelfTest()
+            DispatchQueue.main.async {
+                self.activity = nil
+                switch result {
+                case .success(let results): self.selfTest = results
+                case .failure(let e): self.errorMessage = self.describe(e)
+                }
+            }
         }
     }
 
@@ -86,31 +121,40 @@ final class FirstRunModel: ObservableObject {
             pendingWeakPassword = true
             return
         }
-
-        running = true
-        errorMessage = nil
-        defer { running = false }
+        guard !running else { return }
 
         let notes: [UInt8]
         do { notes = try content.encode() }
         catch { errorMessage = "The initial notes are too large."; return }
 
-        let result = makeSetup().create(
-            password: password,
-            confirmPassword: confirmPassword,
-            initialNotes: notes,
-            acknowledgeDataLossWarnings: acknowledgeDataLoss,
-            confirmWarnings: confirmWarnings)
+        activity = .creating
+        errorMessage = nil
 
-        switch result {
-        case .success(let report):
-            selfTest = report.selfTest
-            try? prefs.save(to: config.schedulePrefsURL)   // remember the windows
-            onComplete()                                   // → AppModel.reload()
-        case .failure(.warningsNotConfirmed(let steps)):
-            pendingWarnings = steps                        // view asks to confirm
-        case .failure(let e):
-            errorMessage = describe(e)
+        // Creation runs the self-test AND seals the first window — both networked —
+        // so it runs off the main thread; the popup drives feedback and the result
+        // is applied on main. No secret reaches disk unless create succeeds.
+        let setup = makeSetup()
+        let pw = password, cpw = confirmPassword, ack = acknowledgeDataLoss
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = setup.create(
+                password: pw,
+                confirmPassword: cpw,
+                initialNotes: notes,
+                acknowledgeDataLossWarnings: ack,
+                confirmWarnings: confirmWarnings)
+            DispatchQueue.main.async {
+                self.activity = nil
+                switch result {
+                case .success(let report):
+                    self.selfTest = report.selfTest
+                    try? self.prefs.save(to: self.config.schedulePrefsURL)   // remember the windows
+                    self.onComplete()                                        // → AppModel.open()
+                case .failure(.warningsNotConfirmed(let steps)):
+                    self.pendingWarnings = steps                             // view asks to confirm
+                case .failure(let e):
+                    self.errorMessage = self.describe(e)
+                }
+            }
         }
     }
 
@@ -178,6 +222,7 @@ struct FirstRunView: View {
             .padding(VaultUI.screenPadding)
             .frame(maxWidth: 580)
         }
+        .overlay { if setup.running { activityOverlay } }
         .alert("Proceed despite warnings?", isPresented: warningAlertBinding) {
             Button("Cancel", role: .cancel) { setup.pendingWarnings = nil }
             Button("Create anyway") {
@@ -301,15 +346,29 @@ struct FirstRunView: View {
         .glassCard(padding: 16)
     }
 
+    /// A centered, blocking popup shown while a networked operation runs — placed
+    /// over the whole form so it can't be missed (the old inline spinner sat in the
+    /// bottom-left of the scroll view). Its text matches the pressed action.
+    private var activityOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView().controlSize(.large)
+                Text(setup.activityTitle).font(.headline)
+                Text(setup.activitySubtitle)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(28)
+            .frame(maxWidth: 320)
+            .glassCard()
+        }
+    }
+
     @ViewBuilder
     private var selfTestSection: some View {
-        if setup.running {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Running on-device self-test…").foregroundStyle(.secondary)
-            }
-            .glassCard(padding: 16)
-        } else if !setup.selfTest.isEmpty {
+        if !setup.selfTest.isEmpty {
             SectionCard(title: "Self-test", systemImage: "checkmark.shield.fill") {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(setup.selfTest, id: \.step) { r in

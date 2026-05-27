@@ -76,7 +76,9 @@ struct RevealableSecureField: View {
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
 
             Button { revealed.toggle() } label: {
-                Image(systemName: revealed ? "eye.slash" : "eye")
+                // Icon signifies the current STATE, not the action: an open eye when
+                // the value is visible, a struck-through eye when it is masked.
+                Image(systemName: revealed ? "eye" : "eye.slash")
             }
             .buttonStyle(.plain)
             .help(revealed ? "Hide" : "Show")
