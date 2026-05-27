@@ -177,7 +177,7 @@ fi
 if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
       Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
       tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift \
-      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/ui_suite.swift tests/hardening_suite.swift tests/main.swift \
+      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/ui_suite.swift tests/hardening_suite.swift tests/reseal_suite.swift tests/diagnostics_suite.swift tests/main.swift \
       -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
       -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
   run_exec "$BUILD/vault_tests" tests
@@ -232,6 +232,24 @@ if swiftc -typecheck -parse-as-library \
 else
   emit FAIL ui/typecheck "Sources/VaultApp failed to type-check (see build/ui-typecheck.log)"
   sed 's/^/    /' "$BUILD/ui-typecheck.log"
+fi
+
+# ---- 7c-2. Headless re-seal agent type-checks (reveal-incapable background reseal) ----
+# The bundled Contents/Helpers/vaultreseal is a loose, headless executable: it runs
+# VaultStore.load() for its forward-re-seal side effect only (no password, no UI,
+# no plaintext). It compiles WITHOUT SwiftUI — VaultCore + the two non-UI app files
+# it reuses (AppConfiguration for paths, BundledHelper for the helper hash) + its
+# own main. No -parse-as-library (main.swift is the entry point, not @main), so it
+# does not collide with the app's @main.
+if swiftc -typecheck \
+      Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+      Sources/VaultApp/AppConfiguration.swift Sources/VaultApp/BundledHelper.swift \
+      Sources/ResealAgent/main.swift \
+      -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include 2> "$BUILD/reseal-typecheck.log"; then
+  emit PASS reseal/typecheck
+else
+  emit FAIL reseal/typecheck "Sources/ResealAgent failed to type-check (see build/reseal-typecheck.log)"
+  sed 's/^/    /' "$BUILD/reseal-typecheck.log"
 fi
 
 # ---- 7d. No-durable-plaintext leak guard (Task 10; app.md §9, SECURITY_INVARIANTS I13) ----
@@ -297,6 +315,21 @@ fi
 #     only. Fences the "can't touch the lock while sealed" property.
 if grep -q 'SettingsView' Sources/VaultApp/Views/LockedView.swift 2>/dev/null; then
   emit FAIL leak/locked-no-schedule "LockedView references SettingsView — the schedule must not be editable from a sealed/locked state"
+  leak_ok=0
+fi
+# (h) The diagnostics log must be secret-free BY CONSTRUCTION (I13). I13 permits a
+#     diagnostic FILE but forbids any SECRET in it; the guarantee here is that the
+#     log's event API carries only non-secret fields, so no content/secret TYPE may
+#     appear in DiagnosticLog.swift — no [UInt8], no `Data` annotation (a Data sink
+#     could carry arbitrary bytes), no VaultContent/VaultSecret. Then a password /
+#     notes physically cannot be passed to the logger.
+DLOG="Sources/VaultCore/DiagnosticLog.swift"
+if [ ! -f "$DLOG" ]; then
+  emit FAIL leak/diagnostics-present "$DLOG missing — diagnostics logger expected"
+  leak_ok=0
+elif grep -nE '\[UInt8\]|: *Data\b|VaultContent|VaultSecret' "$DLOG" | grep -q .; then
+  emit FAIL leak/diagnostics-typed "DiagnosticLog exposes a content/secret type — its events must carry only non-secret fields (I13)"
+  grep -nE '\[UInt8\]|: *Data\b|VaultContent|VaultSecret' "$DLOG" | sed 's/^/    /'
   leak_ok=0
 fi
 [ "$leak_ok" = 1 ] && emit PASS leak/guard

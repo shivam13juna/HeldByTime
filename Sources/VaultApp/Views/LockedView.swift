@@ -15,6 +15,7 @@ import SwiftUI
 struct LockedView: View {
     let info: LockScreenInfo
     @EnvironmentObject private var model: AppModel
+    @State private var showLog = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -42,10 +43,19 @@ struct LockedView: View {
                     .controlSize(.large)
                     .padding(.top, 4)
             }
+
+            // Read-only diagnostics — helps explain "why is it locked / offline?"
+            // without exposing the schedule (which must stay un-editable here).
+            Button { showLog = true } label: {
+                Label("View log", systemImage: "doc.text.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
         }
         .glassCard()
         .frame(maxWidth: 420)
         .padding(VaultUI.screenPadding)
+        .sheet(isPresented: $showLog) { DiagnosticsView() }
     }
 
     private var icon: String {

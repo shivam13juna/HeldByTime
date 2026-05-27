@@ -100,13 +100,19 @@ struct RootView: View {
 /// loop; the user must quit. Deliberately blunt and offers no access path.
 struct FailedView: View {
     let message: String
+    @State private var showLog = false
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.octagon").font(.largeTitle)
             Text("Vault unavailable").font(.title2).bold()
             Text(message).multilineTextAlignment(.center).foregroundStyle(.secondary)
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+            HStack {
+                Button("View log") { showLog = true }
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.borderedProminent)
+            }
         }
         .padding(32)
+        .sheet(isPresented: $showLog) { DiagnosticsView() }
     }
 }

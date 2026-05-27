@@ -10,6 +10,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SchedulePrefs = .default
+    @State private var showLog = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +52,15 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
+
+                    // Read-only, secret-free activity log for troubleshooting.
+                    SectionCard(title: "Diagnostics", systemImage: "doc.text.magnifyingglass",
+                                subtitle: "A secret-free record of what the app and the background "
+                                    + "re-seal agent did — useful if the vault doesn't behave as expected.") {
+                        Button { showLog = true } label: {
+                            Label("View activity log", systemImage: "doc.text.magnifyingglass")
+                        }
+                    }
                 }
                 .padding(VaultUI.screenPadding)
             }
@@ -73,6 +83,7 @@ struct SettingsView: View {
         }
         .frame(width: 480, height: 460)
         .onAppear { draft = model.schedulePrefs }
+        .sheet(isPresented: $showLog) { DiagnosticsView() }
     }
 }
 

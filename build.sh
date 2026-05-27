@@ -113,6 +113,23 @@ swiftc -O -parse-as-library \
     -L "$BUILD" -largon2 \
     -o "$MACOS_DIR/$APP_NAME" || die "app compile failed"
 
+# ---- 5b. Compile the headless re-seal agent (Contents/Helpers/vaultreseal) -----
+# Reveal-incapable background helper: VaultCore + the two non-UI app files it
+# reuses (AppConfiguration, BundledHelper) + its own main — NO SwiftUI. Built here,
+# WHILE BundledHelper.swift still carries the injected hash, so the agent's helper
+# preflight is as strict as the app's. Signed nested-first below (before the bundle).
+say "Compile the re-seal agent (headless, reveal-incapable)"
+swiftc -O \
+    Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+    Sources/VaultApp/AppConfiguration.swift Sources/VaultApp/BundledHelper.swift \
+    Sources/ResealAgent/main.swift \
+    -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
+    -L "$BUILD" -largon2 \
+    -o "$HELPERS_DIR/vaultreseal" || die "re-seal agent compile failed"
+chmod 755 "$HELPERS_DIR/vaultreseal"
+codesign --force --options runtime --timestamp=none -s - "$HELPERS_DIR/vaultreseal" \
+  || die "signing the re-seal agent failed"
+
 # Compile is done — restore the committed fail-closed default now (trap is backup).
 restore_bh
 trap - EXIT
@@ -192,6 +209,7 @@ codesign --force --options runtime --timestamp=none -s - "$APP" \
 say "Verify"
 codesign --verify --deep --strict --verbose=2 "$APP" || die "codesign --verify --deep --strict failed"
 codesign --verify --strict "$HELPERS_DIR/vaultseal" || die "nested helper signature invalid"
+codesign --verify --strict "$HELPERS_DIR/vaultreseal" || die "re-seal agent signature invalid"
 
 # The compiled-in hash must equal the SHIPPED helper's hash, AFTER the bundle was
 # signed (proves bundle signing did not mutate the nested helper, and that the app
@@ -215,6 +233,8 @@ file "$MACOS_DIR/$APP_NAME" | grep -q 'Mach-O 64-bit executable arm64' \
   || die "app binary is not an arm64 Mach-O executable"
 file "$HELPERS_DIR/vaultseal" | grep -q 'Mach-O 64-bit executable arm64' \
   || die "helper is not an arm64 Mach-O executable"
+file "$HELPERS_DIR/vaultreseal" | grep -q 'Mach-O 64-bit executable arm64' \
+  || die "re-seal agent is not an arm64 Mach-O executable"
 
 say "OK — $APP"
 echo "Double-click in Finder, or:  open \"$APP\""
