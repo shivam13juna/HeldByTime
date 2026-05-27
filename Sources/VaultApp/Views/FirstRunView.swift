@@ -116,8 +116,13 @@ struct FirstRunView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Set up your vault").font(.largeTitle).bold()
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Set up your vault").font(.largeTitle).bold()
+                    Text("A time-locked vault — it can only be opened inside a daily window.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 4)
 
                 passwordSection
                 secretsSection
@@ -126,20 +131,25 @@ struct FirstRunView: View {
                 selfTestSection
 
                 if let err = setup.errorMessage {
-                    Text(err).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack {
                     Spacer()
                     Button("Run self-test") { setup.runSelfTest() }
+                        .controlSize(.large)
                         .disabled(setup.running)
                     Button("Create vault") { setup.create() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.running || !canCreate)
                 }
+                .padding(.top, 4)
             }
-            .padding(28)
-            .frame(maxWidth: 560)
+            .padding(VaultUI.screenPadding)
+            .frame(maxWidth: 580)
         }
         .alert("Proceed despite warnings?", isPresented: warningAlertBinding) {
             Button("Cancel", role: .cancel) { setup.pendingWarnings = nil }
@@ -166,66 +176,74 @@ struct FirstRunView: View {
     }
 
     private var passwordSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Vault password").font(.title3).bold()
-            RevealableSecureField(placeholder: "Password", text: $setup.password)
-            RevealableSecureField(placeholder: "Confirm password", text: $setup.confirmPassword)
-            if !setup.confirmPassword.isEmpty && !setup.passwordsMatch {
-                Text("Passwords don't match.").font(.caption).foregroundStyle(.red)
-            }
-            if let weak = setup.weaknessWarning {
-                Text(weak).font(.caption).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+        SectionCard(title: "Vault password", systemImage: "lock.fill") {
+            VStack(alignment: .leading, spacing: 8) {
+                RevealableSecureField(placeholder: "Password", text: $setup.password)
+                RevealableSecureField(placeholder: "Confirm password", text: $setup.confirmPassword)
+                if !setup.confirmPassword.isEmpty && !setup.passwordsMatch {
+                    Text("Passwords don't match.").font(.caption).foregroundStyle(.red)
+                }
+                if let weak = setup.weaknessWarning {
+                    Text(weak).font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
 
     private var secretsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Initial secrets").font(.title3).bold()
-            Text("Label each secret and paste its value, or leave them blank and "
-                 + "add more later. You can add as many as you want.")
-                .font(.caption).foregroundStyle(.secondary)
-            ForEach($setup.content.secrets) { $secret in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        TextField("Label (e.g. macOS admin password)", text: $secret.label)
-                            .textFieldStyle(.plain).font(.callout).foregroundStyle(.secondary)
-                            .autocorrectionDisabled()
-                        Spacer()
-                        Button(role: .destructive) {
-                            setup.content.secrets.removeAll { $0.id == secret.id }
-                        } label: { Image(systemName: "trash") }
-                            .help("Remove this secret")
+        SectionCard(title: "Initial secrets", systemImage: "key.fill",
+                    subtitle: "Label each secret and paste its value, or leave them blank and "
+                        + "add more later. You can add as many as you want.") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach($setup.content.secrets) { $secret in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            TextField("Label (e.g. macOS admin password)", text: $secret.label)
+                                .textFieldStyle(.plain).font(.callout.weight(.medium))
+                                .autocorrectionDisabled()
+                            Spacer()
+                            Button(role: .destructive) {
+                                setup.content.secrets.removeAll { $0.id == secret.id }
+                            } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless)
+                                .help("Remove this secret")
+                        }
+                        RevealableSecureField(placeholder: "value", text: $secret.value)
                     }
-                    RevealableSecureField(placeholder: "value", text: $secret.value)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.04))
+                    )
                 }
+                Button {
+                    setup.content.secrets.append(VaultSecret(label: ""))
+                } label: { Label("Add secret", systemImage: "plus") }
+                    .buttonStyle(.borderless)
             }
-            Button {
-                setup.content.secrets.append(VaultSecret(label: ""))
-            } label: { Label("Add secret", systemImage: "plus") }
         }
     }
 
     private var windowsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Daily windows").font(.title3).bold()
-            Text("The vault time-locks to a window and can only be opened inside one. "
-                 + "At least one window is required — there is no always-open mode.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach($setup.prefs.windows) { $w in
-                WindowEditorRow(window: $w) {
-                    setup.prefs.windows.removeAll { $0.id == w.id }
+        SectionCard(title: "Daily windows", systemImage: "clock.fill",
+                    subtitle: "The vault time-locks to a window and can only be opened inside one. "
+                        + "At least one window is required — there is no always-open mode.") {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach($setup.prefs.windows) { $w in
+                    WindowEditorRow(window: $w) {
+                        setup.prefs.windows.removeAll { $0.id == w.id }
+                    }
                 }
+                if setup.prefs.windows.isEmpty {
+                    Text("Add at least one window to create the vault.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Button {
+                    setup.prefs.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
+                } label: { Label("Add window", systemImage: "plus") }
+                    .buttonStyle(.borderless)
             }
-            if setup.prefs.windows.isEmpty {
-                Text("Add at least one window to create the vault.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            Button {
-                setup.prefs.windows.append(WindowPrefs(startHour: 4, startMinute: 0, endHour: 5, endMinute: 0))
-            } label: { Label("Add window", systemImage: "plus") }
         }
     }
 
@@ -237,19 +255,27 @@ struct FirstRunView: View {
                  + "openable out of window.")
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
+        .glassCard(padding: 16)
     }
 
+    @ViewBuilder
     private var selfTestSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if setup.running { ProgressView("Running on-device self-test…") }
-            if !setup.selfTest.isEmpty {
-                Text("Self-test").font(.title3).bold()
-                ForEach(setup.selfTest, id: \.step) { r in
-                    HStack(spacing: 8) {
-                        Image(systemName: symbol(r.outcome)).foregroundStyle(color(r.outcome))
-                        Text(r.step.rawValue).bold()
-                        Text(r.detail).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.tail)
+        if setup.running {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Running on-device self-test…").foregroundStyle(.secondary)
+            }
+            .glassCard(padding: 16)
+        } else if !setup.selfTest.isEmpty {
+            SectionCard(title: "Self-test", systemImage: "checkmark.shield.fill") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(setup.selfTest, id: \.step) { r in
+                        HStack(spacing: 8) {
+                            Image(systemName: symbol(r.outcome)).foregroundStyle(color(r.outcome))
+                            Text(r.step.rawValue).bold()
+                            Text(r.detail).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
                     }
                 }
             }

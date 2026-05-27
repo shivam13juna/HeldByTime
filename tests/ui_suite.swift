@@ -106,9 +106,22 @@ private func lockScreenTests() {
     check("ui/lock-locked-has-until", locked.untilLocalTime != nil, "expected a display time")
     check("ui/lock-locked-retry", locked.canRetry)
 
-    // lockedUntil with no hint round still describes (no crash, no until).
+    // The coarse relative phrase is present whenever an until-time is, and tracks
+    // the gap from `now` (computed once — not a live countdown). Pin a `now` and a
+    // round ~6 hours ahead so the phrase is deterministic.
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let sixHoursAhead = TrustedTime.expectedRound(at: now.addingTimeInterval(6 * 3600))
+    let lockedRel = LockScreen.describe(.lockedUntil(displayStartRound: sixHoursAhead),
+                                        calendar: cal, now: now)
+    check("ui/lock-relative-present", lockedRel.untilRelative != nil, "expected a relative phrase")
+    check("ui/lock-relative-hours", lockedRel.untilRelative?.contains("6 hours") == true,
+          "expected '~6 hours', got \(lockedRel.untilRelative ?? "nil")")
+
+    // lockedUntil with no hint round still describes (no crash, no until/relative).
     let lockedNoHint = LockScreen.describe(.lockedUntil(displayStartRound: nil), calendar: cal)
-    check("ui/lock-locked-nohint", !lockedNoHint.canPrompt && lockedNoHint.untilLocalTime == nil)
+    check("ui/lock-locked-nohint",
+          !lockedNoHint.canPrompt && lockedNoHint.untilLocalTime == nil
+              && lockedNoHint.untilRelative == nil)
 
     let resealed = LockScreen.describe(.resealed(window: Manifest.Window(startRound: 2_000_000, endRound: 2_000_100)),
                                        calendar: cal)

@@ -18,9 +18,19 @@ struct LockedView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: icon).font(.system(size: 44)).foregroundStyle(.secondary)
+            GlyphBadge(systemImage: icon, tint: tint)
+
             Text(info.title).font(.title).bold()
+
+            // The coarse "Opens in about N hours" reassurance (not a live clock).
+            if let relative = info.untilRelative {
+                Text(relative)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(tint)
+            }
+
             Text(info.message)
+                .font(.callout)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -28,11 +38,14 @@ struct LockedView: View {
             if info.canRetry {
                 Button("Check again") { model.reload() }
                     .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     .padding(.top, 4)
             }
         }
-        .padding(36)
-        .frame(maxWidth: 460)
+        .glassCard()
+        .frame(maxWidth: 420)
+        .padding(VaultUI.screenPadding)
     }
 
     private var icon: String {
@@ -40,6 +53,16 @@ struct LockedView: View {
         case "Offline":     return "wifi.slash"
         case "Unavailable": return "exclamationmark.octagon"
         default:            return "lock.fill"
+        }
+    }
+
+    /// Accent the relative time + glyph by state: alarming red for an
+    /// unavailable/offline state, calm accent otherwise.
+    private var tint: Color {
+        switch info.title {
+        case "Unavailable": return .red
+        case "Offline":     return .orange
+        default:            return .accentColor
         }
     }
 }

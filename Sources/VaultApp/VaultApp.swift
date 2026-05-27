@@ -71,6 +71,14 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        phaseView
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // One place applies the user's light/dark choice to the whole app.
+            .preferredColorScheme(model.uiPrefs.appearance.colorScheme)
+    }
+
+    @ViewBuilder
+    private var phaseView: some View {
         switch model.phase {
         case .launching, .loading:
             ProgressView("Checking the time-lock…").padding()

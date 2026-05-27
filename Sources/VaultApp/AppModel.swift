@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
     @Published var unlockError: String?
     /// The schedule the user configured (windows). Settings edits this.
     @Published var schedulePrefs: SchedulePrefs
+    /// Cosmetic UI preferences (light/dark). Independent of the schedule.
+    @Published var uiPrefs: UIPrefs
 
     private let config: AppConfiguration
 
@@ -46,6 +48,7 @@ final class AppModel: ObservableObject {
         ProcessHardening.disableCoreDumps()   // no core file can hold decrypted secrets
         self.config = config
         self.schedulePrefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
+        self.uiPrefs = (try? UIPrefs.load(from: config.uiPrefsURL)) ?? .default
     }
 
     // MARK: - Production engine wiring
@@ -156,5 +159,12 @@ final class AppModel: ObservableObject {
     func applySchedule(_ prefs: SchedulePrefs) {
         schedulePrefs = prefs
         try? prefs.save(to: config.schedulePrefsURL)
+    }
+
+    /// Persist the cosmetic appearance choice. Purely a view-layer preference;
+    /// it never affects the lock, the schedule, or any secret.
+    func applyAppearance(_ appearance: Appearance) {
+        uiPrefs.appearance = appearance
+        try? uiPrefs.save(to: config.uiPrefsURL)
     }
 }

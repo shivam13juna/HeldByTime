@@ -19,6 +19,9 @@ struct AppConfiguration {
     let compiledHelperSHA256: [UInt8]
     /// Where the (non-secret) schedule preferences are persisted.
     var schedulePrefsURL: URL { vaultDir.appendingPathComponent("schedule.json") }
+    /// Where the cosmetic UI preferences (appearance) are persisted. A SEPARATE
+    /// file from the schedule so a UI-prefs decode failure never clobbers windows.
+    var uiPrefsURL: URL { vaultDir.appendingPathComponent("ui.json") }
 
     static var live: AppConfiguration {
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
