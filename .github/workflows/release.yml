@@ -23,6 +23,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so build.sh's git-commit-count build number is real (a
+          # shallow clone would collapse CFBundleVersion to 1).
+          fetch-depth: 0
+
+      - name: Verify tag matches the VERSION file
+        # Drift guard: the pushed tag (e.g. v1.1) must equal `v<VERSION file>`.
+        # Stops a release from going out with a tag that disagrees with the build.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          FILE_VER="v$(tr -d '[:space:]' < VERSION)"
+          if [ "$FILE_VER" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION file ($FILE_VER)"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches VERSION file"
 
       - name: Set up Go
         uses: actions/setup-go@v5

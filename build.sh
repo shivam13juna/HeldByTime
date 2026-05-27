@@ -30,8 +30,16 @@ cd "$ROOT"
 
 APP_NAME="EncryptedVault"
 BUNDLE_ID="com.shivam.encryptedvault"
-VERSION="1.0"
-BUILD_NUMBER="1"
+# Single source of truth for the marketing version: the VERSION file at the repo
+# root (Android's versionName). Edit that one line and the app bundle, the release
+# zip name, and the git tag (via ./release.sh) all follow. CI also asserts the
+# pushed tag equals this file (see .github/workflows/release.yml).
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+[ -n "$VERSION" ] || { echo "BUILD FAILED: VERSION file is empty or missing" >&2; exit 1; }
+# Build number = git commit count (Android's versionCode): monotonic, never hand-
+# set. Falls back to 1 outside a git checkout. CI must checkout with fetch-depth:0
+# or this collapses to 1 on a shallow clone.
+BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 MIN_MACOS="14.0"
 DRYRUN_MARKER='VAULT_DRYRUN_SURFACE_V1'
 
