@@ -86,14 +86,19 @@ public struct DiagnosticLog {
     /// and `tag` is a NON-SECRET source label (e.g. a vault's name, or "App"). Every
     /// line is prefixed `"[tag] "` and the whole set is ordered by the ISO-8601
     /// timestamp each line begins with — the formats are identical across logs, so
-    /// lexical order is chronological. Pure and secret-free (inputs are already
-    /// secret-free lines + non-secret tags), so it lives in the engine and is unit-
-    /// testable headless. Used by the app's merged activity-log view.
-    public static func merge(_ groups: [(tag: String, lines: [String])]) -> [String] {
+    /// lexical order is chronological. Ordering ALWAYS uses the raw (UTC) line;
+    /// `displayIn`, when set, only re-renders each line's timestamp into that zone
+    /// for the viewer (storage stays UTC, so the sort stays correct). Pure and
+    /// secret-free (inputs are already secret-free lines + non-secret tags), so it
+    /// lives in the engine and is unit-testable headless. Used by the app's merged
+    /// activity-log view.
+    public static func merge(_ groups: [(tag: String, lines: [String])],
+                             displayIn tz: TimeZone? = nil) -> [String] {
         var tagged: [(key: String, decorated: String)] = []
         for group in groups {
             for line in group.lines {
-                tagged.append((key: line, decorated: "[\(group.tag)] \(line)"))
+                let shown = tz.map { localize(line, in: $0) } ?? line
+                tagged.append((key: line, decorated: "[\(group.tag)] \(shown)"))
             }
         }
         return tagged.sorted { $0.key < $1.key }.map(\.decorated)
@@ -144,4 +149,49 @@ public struct DiagnosticLog {
         case .failClosed: return "fail-closed (no usable vault copy)"
         }
     }
+
+    // MARK: - Display localisation (storage stays UTC; only the VIEWER converts)
+
+    /// Re-render a log line's leading UTC ISO-8601 timestamp into `tz` for DISPLAY
+    /// ONLY. Storage stays UTC — so `merge()` ordering and cross-log comparison stay
+    /// stable and old lines keep parsing — while the viewer shows local wall-clock
+    /// time, the zone's letters, and the original UTC time in parentheses, e.g.
+    ///   `2026-05-30T12:34:56Z [app] …`  →  `2026-05-30 18:04:56 IST (12:34:56Z) [app] …`
+    /// A line whose first token isn't a parseable timestamp is returned unchanged
+    /// (graceful for blank/old/malformed lines). No secret is involved: the input is
+    /// an already-written, secret-free line and the output only re-times it.
+    public static func localize(_ line: String, in tz: TimeZone = .current) -> String {
+        let parts = line.split(separator: " ", maxSplits: 1)
+        guard let stamp = parts.first, let date = iso.date(from: String(stamp)) else { return line }
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.timeZone = tz
+        local.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let rest = parts.count > 1 ? " " + String(parts[1]) : ""
+        return "\(local.string(from: date)) \(zoneLetters(tz, at: date)) (\(utcTime.string(from: date)))\(rest)"
+    }
+
+    /// Short letters for `tz` at `date`: the OS abbreviation when it is alphabetic
+    /// (PST, EST, JST…); otherwise — when the OS only has a numeric offset like
+    /// "GMT+5:30" (true for India, Nepal, …) — the initials of the long English name
+    /// (date-correct for DST), so "India Standard Time" → "IST" and the user sees real
+    /// zone letters rather than a redundant offset next to the UTC value. Falls back to
+    /// whatever the OS gave if no sensible initials exist.
+    static func zoneLetters(_ tz: TimeZone, at date: Date) -> String {
+        let osAbbr = tz.abbreviation(for: date) ?? ""
+        if !osAbbr.isEmpty && osAbbr.allSatisfy(\.isLetter) { return osAbbr }
+        let style: NSTimeZone.NameStyle = tz.isDaylightSavingTime(for: date) ? .daylightSaving : .standard
+        let longName = tz.localizedName(for: style, locale: Locale(identifier: "en_US")) ?? osAbbr
+        let initials = String(longName.split(separator: " ").compactMap(\.first).filter(\.isUppercase))
+        return initials.count >= 2 ? initials : osAbbr
+    }
+
+    /// The original UTC wall-clock time, shown in parentheses beside the local time.
+    private static let utcTime: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "HH:mm:ss'Z'"
+        return f
+    }()
 }

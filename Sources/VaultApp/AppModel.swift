@@ -181,7 +181,7 @@ final class AppModel: ObservableObject {
             let log = DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
             groups.append((entry.meta.label, log.tail()))
         }
-        return DiagnosticLog.merge(groups)
+        return DiagnosticLog.merge(groups, displayIn: .current)
     }
 
     /// Clear the app-scope log and every vault's diagnostics.log. All non-secret;

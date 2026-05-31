@@ -59,6 +59,20 @@ if find . -path ./.git -prune -o -path ./build -prune -o -name '*.app' -print 2>
 fi
 [ "$scope_ok" = 1 ] && emit PASS scope/phase-guard
 
+# ---- 1b. App-headless guard (sibling to scope/ui-import) ----
+# A few Sources/VaultApp files are pulled into the OFFLINE test binary below (§7) so
+# their logic is unit-tested headless, exactly like the engine. Those specific files
+# must therefore stay SwiftUI/AppKit/Cocoa-free, or the offline build breaks. This
+# pins the decoupling so a future edit can't silently re-couple them. Extend
+# HEADLESS_APP as more app files join the offline harness.
+HEADLESS_APP="Sources/VaultApp/BundledHelper.swift Sources/VaultApp/AppConfiguration.swift Sources/VaultApp/ResealAgentInstaller.swift Sources/VaultApp/VaultModel.swift Sources/VaultApp/FirstRunModel.swift Sources/VaultApp/UIPrefs.swift Sources/VaultApp/AppModel.swift"
+if grep -lE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' $HEADLESS_APP 2>/dev/null | grep -q .; then
+  emit FAIL scope/app-headless "a headless-tested VaultApp file imports SwiftUI/AppKit/Cocoa (would break the offline test binary)"
+  grep -lE '^[[:space:]]*import[[:space:]]+(SwiftUI|AppKit|Cocoa)' $HEADLESS_APP 2>/dev/null | sed 's/^/    /'
+else
+  emit PASS scope/app-headless
+fi
+
 # ---- 2. Placeholder scan (our deliverables only; vendored third-party code excluded) ----
 PH='(TODO|FIXME|XXX|PLACEHOLDER|HACK)'
 PH_SCAN=(grep -rnE "$PH" --exclude-dir=vendor FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests)
@@ -176,8 +190,9 @@ fi
 # ---- 7. Build + run the test binary (format + Argon2id + end-to-end) ----
 if [ -f "$BUILD/libargon2.a" ] && swiftc -O \
       Sources/Constants/Constants.swift Sources/VaultCore/*.swift \
+      Sources/VaultApp/BundledHelper.swift Sources/VaultApp/AppConfiguration.swift Sources/VaultApp/ResealAgentInstaller.swift Sources/VaultApp/VaultModel.swift Sources/VaultApp/FirstRunModel.swift Sources/VaultApp/UIPrefs.swift Sources/VaultApp/AppModel.swift \
       tests/test_support.swift tests/format_suite.swift tests/argon2_suite.swift \
-      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/ui_suite.swift tests/hardening_suite.swift tests/reseal_suite.swift tests/diagnostics_suite.swift tests/registry_suite.swift tests/main.swift \
+      tests/helper_suite.swift tests/schedule_suite.swift tests/store_suite.swift tests/session_suite.swift tests/setup_suite.swift tests/ui_suite.swift tests/hardening_suite.swift tests/reseal_suite.swift tests/diagnostics_suite.swift tests/registry_suite.swift tests/agent_suite.swift tests/vaultmodel_suite.swift tests/appmodel_suite.swift tests/main.swift \
       -I Sources/CArgon2/include -Xcc -Ivendor/argon2/include \
       -L "$BUILD" -largon2 -o "$BUILD/vault_tests" 2> "$BUILD/test-build.log"; then
   run_exec "$BUILD/vault_tests" tests

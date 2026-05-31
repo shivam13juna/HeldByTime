@@ -32,36 +32,52 @@ enum ResealAgentInstaller {
     /// kickstart makes it run once right now (don't wait for the first interval).
     /// Returns true if the plist was written and (re)bootstrap was attempted;
     /// false if there is nothing to install (no bundled agent / can't write).
+    ///
+    /// The three side effects — whether the agent binary exists, persisting the
+    /// plist, and running launchctl — plus the target locations and `uid` are
+    /// injected with the LIVE defaults below, so the install ACT is unit-testable
+    /// offline (no launchd, no real filesystem) while the production call site
+    /// (`AppModel.bootstrap`) keeps using the zero-argument form for identical
+    /// behaviour. The seam touches no secret and still never logs.
     @discardableResult
-    static func installOrRefresh() -> Bool {
+    static func installOrRefresh(
+        agentURL: URL = agentExecutableURL,
+        plistURL: URL = Self.plistURL,
+        uid: uid_t = getuid(),
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        writePlist: (Data, URL) throws -> Void = { data, url in
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        },
+        run: ([String]) -> Void = Self.launchctl
+    ) -> Bool {
         // Only install once the agent binary is actually present (i.e. a real
         // bundled build, not a bare dev run) — otherwise launchd would spawn a
         // missing path on a timer.
-        let agent = agentExecutableURL
-        guard FileManager.default.fileExists(atPath: agent.path) else { return false }
+        guard fileExists(agentURL.path) else { return false }
 
-        let plist = LaunchAgentPlist.reseal(programPath: agent.path)
+        let plist = LaunchAgentPlist.reseal(programPath: agentURL.path)
         guard !plist.isEmpty else { return false }
 
-        let dir = plistURL.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try plist.write(to: plistURL, options: .atomic)
+            try writePlist(plist, plistURL)
         } catch {
             return false   // can't persist the plist — nothing to bootstrap.
         }
 
-        let domain = "gui/\(getuid())"
+        let domain = "gui/\(uid)"
         // bootout an old definition (ignore "not loaded"), then bootstrap fresh,
         // then kickstart so it runs immediately.
-        launchctl(["bootout", domain, plistURL.path])
-        launchctl(["bootstrap", domain, plistURL.path])
-        launchctl(["kickstart", "\(domain)/\(LaunchAgentPlist.resealLabel)"])
+        run(["bootout", domain, plistURL.path])
+        run(["bootstrap", domain, plistURL.path])
+        run(["kickstart", "\(domain)/\(LaunchAgentPlist.resealLabel)"])
         return true
     }
 
-    /// Run a launchctl subcommand, discarding output and ignoring failure.
-    private static func launchctl(_ args: [String]) {
+    /// Run a launchctl subcommand, discarding output and ignoring failure. This is
+    /// the live default for `installOrRefresh(run:)`; tests inject a recording fake.
+    static func launchctl(_ args: [String]) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         p.arguments = args
