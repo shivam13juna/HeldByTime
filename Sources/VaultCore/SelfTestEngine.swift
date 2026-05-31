@@ -2,7 +2,7 @@
 //
 // Build-time green does not prove THIS machine is green: signing, quarantine, a
 // missing exec bit, a 1 GiB Argon2 allocation failure on this hardware, or a
-// drand endpoint blocked by Canopy can all fail only at runtime. The engine is
+// drand endpoint blocked by a content filter can all fail only at runtime. The engine is
 // the runtime counterpart to the build-time gates, and first-run setup
 // (FirstRunSetup) MUST refuse to store any real secret until it is satisfied.
 //
@@ -65,7 +65,7 @@ struct SelfTestEngine {
         case argon2Benchmark    // Argon2id at 1 GiB production params — alloc-fail ⇒ fail closed; times unlock
         case helperBinaryValid  // bundled vaultseal: regular file, exec bit, pinned hash matches
         case helperRoundTrip    // real seal→persist→unseal of a throwaway payload (correctly future-locked)
-        case endpointsReachable // ≥1 drand endpoint through Canopy = pass; warn unless ≥2; forged chain = fail
+        case endpointsReachable // ≥1 drand endpoint reachable = pass; warn unless ≥2; forged chain = fail
         case backupExclusion    // vault dir carries isExcludedFromBackup (Time Machine / iCloud)
     }
 
@@ -249,7 +249,7 @@ struct SelfTestEngine {
             switch report.okCount {
             case 0:
                 return StepResult(step: .endpointsReachable, outcome: .fail,
-                                  detail: "no drand endpoint reachable through Canopy — the vault will not open. [\(detail)]")
+                                  detail: "no drand endpoint reachable (blocked by a content filter or firewall?) — the vault will not open. [\(detail)]")
             case 1:
                 return StepResult(step: .endpointsReachable, outcome: .warn,
                                   detail: "only 1 of \(report.total) endpoints reachable; if it is later blocked the vault will not open — whitelist a second. [\(detail)]")

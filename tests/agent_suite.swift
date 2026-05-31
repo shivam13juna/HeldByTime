@@ -130,4 +130,52 @@ func runAgentSuite() {
         check("agent/returns-true-regardless-of-launchctl", ok == true,
               "success path returns true once the plist is written + bootstrap attempted")
     }
+
+    // --- agent/uninstall-boots-out-then-removes ---  (the uninstall behavioural contract)
+    // Uninstall must unload the job by LABEL (gui/<uid>/<label>) and THEN delete the
+    // plist — in that order — and report the agent gone.
+    do {
+        var ran: [[String]] = []
+        var removed: [URL] = []
+        let ok = ResealAgentInstaller.uninstall(
+            plistURL: plistURL, uid: uid,
+            fileExists: { _ in true },          // plist present
+            removeFile: { removed.append($0) },
+            run: { ran.append($0) })
+        check("agent/uninstall-boots-out-then-removes",
+              ok && ran == [["bootout", "\(domain)/\(label)"]] && removed == [plistURL],
+              "uninstall ⇒ bootout gui/<uid>/<label>, then delete the plist, return true")
+    }
+
+    // --- agent/uninstall-when-absent ---
+    // No plist on disk ⇒ still boot out (harmless), DON'T call removeFile, return
+    // true (the end state is "agent gone" either way).
+    do {
+        var ran: [[String]] = []
+        var removed: [URL] = []
+        let ok = ResealAgentInstaller.uninstall(
+            plistURL: plistURL, uid: uid,
+            fileExists: { _ in false },         // already absent
+            removeFile: { removed.append($0) },
+            run: { ran.append($0) })
+        check("agent/uninstall-when-absent",
+              ok && ran == [["bootout", "\(domain)/\(label)"]] && removed.isEmpty,
+              "absent plist ⇒ bootout only, no remove, still true (already uninstalled)")
+    }
+
+    // --- agent/uninstall-remove-failure-failquiet ---
+    // The plist exists but can't be deleted ⇒ return false (no crash); bootout was
+    // still attempted (best-effort, mirroring the install side).
+    do {
+        struct RemoveError: Error {}
+        var ran: [[String]] = []
+        let ok = ResealAgentInstaller.uninstall(
+            plistURL: plistURL, uid: uid,
+            fileExists: { _ in true },
+            removeFile: { _ in throw RemoveError() },
+            run: { ran.append($0) })
+        check("agent/uninstall-remove-failure-failquiet",
+              ok == false && ran == [["bootout", "\(domain)/\(label)"]],
+              "a plist-delete failure ⇒ false, bootout still attempted, no crash")
+    }
 }

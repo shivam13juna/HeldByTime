@@ -34,7 +34,7 @@ That single fact drives every design choice:
   the owner cannot change the system clock, read swap / other-process memory, or
   configure Time Machine — which closes several bypasses (see §11). The Mac admin
   password exists only as an offline emergency backup held by a trusted third
-  party (the owner's sister); it is **not** the vault master password, so it does
+  party; it is **not** the vault master password, so it does
   not weaken the daily-window commitment. If the owner could self-elevate, the
   closed bypasses would reopen.
 
@@ -48,13 +48,13 @@ That single fact drives every design choice:
 | No access **during** an open window | ❌ Inherent ceiling | While open you have full plaintext access — can copy, paste, screenshot (§11) |
 | Keep long-random copy-pasted secrets out of reach out-of-window | ✅ In practice | Un-memorizable from occasional viewing; vault is sealed out-of-window. Residual = *deliberately* stashing a copy (clipboard residue out of scope — see §2) |
 | Recover a forgotten **vault master** password | ❌ Never | No backdoor; lost master password = vault contents gone forever |
-| Regain Mac **admin** if locked out | ✅ Via sister | Sister holds the admin password as anti-brick backup (NOT the vault master password) |
+| Regain Mac **admin** if locked out | ✅ Via trusted party | A trusted third party holds the admin password as anti-brick backup (NOT the vault master password) |
 
 ---
 
 ## 2. Decisions locked in
 
-- **Platform:** macOS (Apple Silicon, M3 Max). Distributed as a real
+- **Platform:** macOS (Apple Silicon). Distributed as a real
   double-clickable **`.app` bundle** — there is **no terminal entry point** the
   user interacts with.
 - **Unlock model:** **password + time-lock** (both required), see §4.
@@ -82,26 +82,26 @@ That single fact drives every design choice:
 - **No fallback / no escape hatch:** zero weakening. There is no password-only
   copy and no recovery path around the time-lock. drand-down or forgotten master
   password = no access, by design. (Anti-brick exception: the *Mac admin*
-  password also exists as an offline backup held by the owner's sister — a
+  password also exists as an offline backup held by a trusted third party — a
   separate secret, not the vault master password.)
 
 ### What's stored, and special handling
 
-Contents are text notes plus two high-value secrets: the **macOS admin password**
-and the **Canopy password** (Canopy = the owner's website filter). Both are long,
+Contents are text notes plus one or more high-value secrets — for example an
+account-recovery password or a content-filter password. Such secrets are long,
 random, copy-pasted, and needed only ~1–2×/month, so they are not realistically
 memorizable from occasional viewing — which is why a single daily window is
 acceptable for them. Required handling:
 
-- **Canopy must whitelist `api.drand.sh` (mandatory).** The vault needs drand to
-  unseal; if Canopy blocks it and the Canopy password is *inside* the vault, you
-  hard-deadlock. Whitelist before relying on the vault. (Confirmed reachable
-  through Canopy.)
+- **Your content filter / firewall must allow `api.drand.sh` (mandatory).** The
+  vault needs drand to unseal; if a filter blocks it and the password for that
+  same filter is *inside* the vault, you hard-deadlock. Allow it before relying
+  on the vault. (Confirm it is reachable first.)
 - **Secrets masked by default** in the UI, revealed only on an explicit tap — a
   small friction so an idle glance doesn't expose them.
 - **Setup warning.** Because contents include machine master-keys, the app states
   bluntly at setup that forgetting the vault master password loses them
-  permanently (Mac admin recovery then depends on the sister's backup).
+  permanently (Mac admin recovery then depends on the trusted third party's backup).
 
 > **Out of scope (owner's decision):** clipboard-residue and screen-capture
 > defenses (auto-clear, concealed pasteboard, `NSWindow.sharingType`) are **not**
@@ -450,8 +450,8 @@ The only "cost" is the no-SLA dependency risk in (1)/(2) above.
   `.app`**. Hardened contract: **stdin → stdout only** (the `manifest + PW01` payload
   is piped, never written to disk); commands limited to `seal --round N` / `unseal` /
   `current-round`; **no file-path or network flags exposed**; **chain hash and
-  drand endpoints hardcoded** (`api.drand.sh` + failover — each must be Canopy-
-  whitelisted to help); no plaintext logging. **The helper is a security API, not a
+  drand endpoints hardcoded** (`api.drand.sh` + failover — each must be allow-listed
+  by any content filter to help); no plaintext logging. **The helper is a security API, not a
   CLI:** errors are a **closed set of machine-readable JSON codes on stderr** —
   `round_not_ready`, `round_too_near`, `stale_round`, `auth_failed`, `parse_error`,
   `chain_mismatch`, `timeout` (the **helper error domain**, distinct from the
@@ -636,14 +636,14 @@ The only "cost" is the no-SLA dependency risk in (1)/(2) above.
     failure / wrong
     params on this hardware), **bundled `vaultseal` is executable + signature-valid +
     completes a real seal/unseal/`current-round` round-trip** (catches broken
-    signing, quarantine, missing exec bit), and drand reachability through Canopy.
+    signing, quarantine, missing exec bit), and drand reachability through any content filter.
     Plus the data-loss warning. Build-time green does not imply this machine is green;
     refuse real secrets until it is. **Self-test must not leak:** throwaway random
     payload in a **separate temp dir** (never the real vault path), no real notes,
     cleanup + assert-deleted on success *and* failure. **Endpoint policy
-    (deliberate): ≥1 endpoint reachable through Canopy is the hard pass condition**
+    (deliberate): ≥1 endpoint reachable is the hard pass condition**
     (availability), but **strongly warn unless ≥2 independent endpoints pass** —
-    a single whitelisted mirror is fragile when the Canopy password may live *inside*
+    a single reachable mirror is fragile when a filter's own password may live *inside*
     the vault; the setup screen states plainly "if your only working drand endpoint is
     later blocked, the vault will not open." Per-endpoint reachability is shown.
     Also **set + verify `isExcludedFromBackup` on the vault dir and hard-warn** about
@@ -766,7 +766,7 @@ honest one — the answer is "no access" either way.)*
 access — the out-of-window wall is real cryptography. It is **not** an absolute
 cage against a *premeditated* owner during an open window, who can always retain
 a copy; that limit is true of every commitment device and cannot be engineered
-away locally. It is mitigated socially by the sister holding the admin-password
+away locally. It is mitigated socially by a trusted third party holding the admin-password
 backup. **Code-signing and the on-device self-test are integrity checks** — they
 catch broken builds, quarantine, and accidental tampering; they are **not** a
 commitment boundary against a premeditated owner who can replace the `.app`/helper
@@ -844,7 +844,7 @@ official `build.sh` path has passed them (a process gate, not a crypto boundary)
   gates): refuse to store any real secret until Argon2id RFC vectors pass *on this
   machine*, the bundled `vaultseal` is executable + signature-valid + completes a
   real seal/unseal/`current-round` round-trip, and **at least one** configured drand
-  endpoint is reachable through Canopy (unreachable configured endpoints produce
+  endpoint is reachable (unreachable configured endpoints produce
   visible warnings, not a hard failure — matches §10's deliberate availability call).
 - **No durable plaintext after quit/crash**: state restoration / autosave / undo
   persistence off, **spellcheck / grammar / data-detectors / substitutions off on

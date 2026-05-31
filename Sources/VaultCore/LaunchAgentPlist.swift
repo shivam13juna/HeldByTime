@@ -25,7 +25,7 @@ import Foundation
 enum LaunchAgentPlist {
     /// The launchd job label (also the plist filename stem and the kickstart
     /// target). Stable so install is idempotent across launches.
-    static let resealLabel = "com.shivam.encryptedvault.reseal"
+    static let resealLabel = "app.encryptedvault.reseal"
 
     /// How often launchd fires the agent while the machine is awake. launchd
     /// COALESCES fires missed during sleep/shutdown into a single run on wake,

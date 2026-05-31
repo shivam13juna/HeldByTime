@@ -108,6 +108,20 @@ struct VaultRegistry {
         return .success(())
     }
 
+    /// Permanently remove EVERY vault under the root — each unlinked, never Trashed
+    /// (same semantics as `delete(id:)`). Best-effort: it attempts every vault and
+    /// returns how many were removed. Does NOT touch the root-level app files
+    /// (ui.json / app.log); the caller (the "Uninstall + delete data" path) wipes
+    /// those separately. It destroys, it never reveals.
+    @discardableResult
+    func deleteAll() -> Int {
+        var removed = 0
+        for entry in list() {
+            if case .success = delete(id: entry.id) { removed += 1 }
+        }
+        return removed
+    }
+
     /// Rename (relabel) a vault in place. Fails if there is no real vault for `id`.
     func rename(id: String, to label: String) -> Result<VaultEntry, RegistryError> {
         guard let dir = safeDir(for: id) else { return .failure(.invalidId(id)) }

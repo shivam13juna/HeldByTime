@@ -18,8 +18,8 @@ func runUISuite() {
 private func vaultContentTests() {
     // Round-trip preserves notes + secrets exactly.
     let c = VaultContent(notes: "remember: 04:00 window",
-                         secrets: [VaultSecret(id: UUID(), label: "macOS admin password", value: "hunter2"),
-                                   VaultSecret(id: UUID(), label: "Canopy password", value: "")])
+                         secrets: [VaultSecret(id: UUID(), label: "Example account", value: "hunter2"),
+                                   VaultSecret(id: UUID(), label: "Example service", value: "")])
     do {
         let bytes = try c.encode()
         let back = try VaultContent.decode(bytes)
@@ -129,7 +129,7 @@ private func lockScreenTests() {
 
     let offline = LockScreen.describe(.offline, calendar: cal)
     check("ui/lock-offline", !offline.canPrompt && offline.canRetry && offline.untilLocalTime == nil)
-    check("ui/lock-offline-mentions-canopy", offline.message.contains("drand"))
+    check("ui/lock-offline-mentions-drand", offline.message.contains("drand"))
 
     // Fail-closed must NOT offer a retry that could loop, and never prompts.
     let failed = LockScreen.describe(.failClosed(reason: "no usable vault copy"), calendar: cal)

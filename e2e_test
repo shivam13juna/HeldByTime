@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # e2e_test — Task 12 (app.md §10 step 14, §11). The LIVE end-to-end test across a
 # real drand round boundary. Separate from ./run_tests on purpose: it needs the
-# network (Canopy must allow api.drand.sh) and a few minutes of real wall-clock
+# network (a content filter must allow api.drand.sh) and a few minutes of real wall-clock
 # time, so it can't live inside the offline harness.
 #
 # It compiles `tests/e2e/main.swift` together with the real VaultCore engine (so

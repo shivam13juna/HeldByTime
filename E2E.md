@@ -22,7 +22,7 @@ exist and cover the required legs — the same pattern as Task 11's `build/bundl
 ./e2e_test          # ~3–4 min: crosses two real quicknet round boundaries
 ```
 
-Requires the network (Canopy must allow `api.drand.sh`). `e2e_test` compiles
+Requires the network (a content filter must allow `api.drand.sh`). `e2e_test` compiles
 `tests/e2e/main.swift` with the real engine and runs it against the bundled signed
 helper. Legs (each prints a `RESULT:` line):
 
@@ -49,7 +49,7 @@ Expected tail: `E2E: all live legs passed.` and exit 0.
 ## Part 2 — manual GUI checklist (the first live launch)
 
 Use a **throwaway sentinel** in the notes during this test (e.g. `LEAKPROBE-7f3a`),
-**not** your real admin/Canopy password — so `scan_leak.sh` can search for it in
+**not** a real secret of yours — so `scan_leak.sh` can search for it in
 cleartext. Store the real secrets only after this checklist is green.
 
 Set a **short test window** in Settings (e.g. opening 2–3 minutes out, lasting ~2
@@ -59,8 +59,8 @@ minutes) so you can cross a boundary by hand without waiting hours.
       a windowed app — there is **no** terminal entry point, no CLI flags, no URL
       scheme. First run shows the setup + self-test gate.
 - [ ] **2. First-run self-test passes** on this machine (Argon2id vector, helper
-      preflight + round-trip, ≥1 drand endpoint reachable through Canopy, backup
-      exclusion). If it blocks, fix the cause (Canopy whitelist!) before storing
+      preflight + round-trip, ≥1 drand endpoint reachable, backup
+      exclusion). If it blocks, fix the cause (content-filter allow-list!) before storing
       anything real.
 - [ ] **3. Create the vault** with the throwaway sentinel in the notes; confirm the
       password twice; acknowledge the data-loss warning. The vault seals to the
@@ -83,13 +83,22 @@ minutes) so you can cross a boundary by hand without waiting hours.
 - [ ] **8. Relaunch after the window has ended** → the launch performs the
       **defensive re-seal** (no prompt) and shows the lock screen; the vault is now
       sealed forward to the next window.
-- [ ] **9. Offline test:** turn off Wi-Fi (or have Canopy block `api.drand.sh`) and
+- [ ] **9. Offline test:** turn off Wi-Fi (or have a content filter block `api.drand.sh`) and
       relaunch during a window → it **fails closed** (locked/offline, **no**
       password prompt). Re-enable to recover.
 - [ ] **10. Lock button** re-seals and re-locks without quitting.
+- [ ] **11. Uninstall (do this last).** From the vault list, open the **•••** menu →
+      **Uninstall application…**. Leave the checkbox **off** and confirm: the app
+      moves *itself* to the Trash and quits. Verify the background helper is gone
+      (`launchctl print gui/$(id -u)/app.encryptedvault.reseal` → "Could not find
+      service", and `~/Library/LaunchAgents/app.encryptedvault.reseal.plist` is
+      removed) while your data under `~/Library/Application Support/EncryptedVault`
+      is **kept** (reinstall + launch re-creates the helper and re-opens the vaults).
+      Then, on a throwaway vault, repeat with the checkbox **on**, type
+      `delete my vaults`, and confirm → the data directory is removed too.
 
 When all boxes are checked and `e2e_test` is green, the build is verified for real
-use. Replace the throwaway sentinel with the real admin + Canopy passwords on a
+use. Replace the throwaway sentinel with your real secrets on a
 final clean run (and re-run `scan_leak.sh` once more with a throwaway probe first,
 not the real secret).
 
@@ -106,7 +115,7 @@ The §11 corner-case table, mapped to where each is enforced and proven:
 | Stale `.bak` after a crash | defensive re-seal overwrites **both** files | `store_suite`; live `e2e/defensive-reseal` + `relocked-after-defensive` |
 | Symlink/hardlink `vault.dat`/`.bak` | `SecureFile` O_NOFOLLOW, owner+0600, `st_nlink==1` | `store_suite` path/inode cases |
 | OS/versioned backup keeps an expired vault | `isExcludedFromBackup` on the dir (re-verified) | `store_suite`; self-test `backupExclusion` |
-| Copy plaintext during an open window | **accepted ceiling** (§2/§11) — privilege-independent | n/a (documented, social mitigation = sister's admin backup) |
+| Copy plaintext during an open window | **accepted ceiling** (§2/§11) — privilege-independent | n/a (documented, social mitigation = a trusted third party's admin backup) |
 | Seal to a future round, won't open early | unseal-as-gate (crypto) | live `e2e/locked-before-window` |
 | Window-end / Lock / quit re-seal forward only (I8) | `VaultSession.reseal` forward guard + `nextLock` floors | `session_suite`; live `e2e/interactive-reseal-forward` |
 | Force-kill after unseal, before password | nothing written; next launch re-seals or stays locked | live `e2e/defensive-reseal` (expired path); GUI step 6–8 |
@@ -119,6 +128,6 @@ The §11 corner-case table, mapped to where each is enforced and proven:
 *impulsive* out-of-window access — the wall is real cryptography. It is **not** an
 absolute cage against a *premeditated* owner who, during an open window, retains a
 copy or replaces the user-writable `.app`/helper before a future window. That limit
-is inherent to every local commitment device and is mitigated socially (the sister
-holds the admin-password backup). Code-signing + the self-test are **integrity**
+is inherent to every local commitment device and is mitigated socially (a trusted
+third party holds the admin-password backup). Code-signing + the self-test are **integrity**
 checks, not a commitment boundary.

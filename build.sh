@@ -29,7 +29,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 APP_NAME="EncryptedVault"
-BUNDLE_ID="com.shivam.encryptedvault"
+BUNDLE_ID="app.encryptedvault"
 # Single source of truth for the marketing version: the VERSION file at the repo
 # root (Android's versionName). Edit that one line and the app bundle, the release
 # zip name, and the git tag (via ./release.sh) all follow. CI also asserts the

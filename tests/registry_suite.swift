@@ -113,4 +113,24 @@ func runRegistrySuite() {
           "advisory next opening is the soonest future window start")
     check("reg/no-windows-nil", Schedule(windows: [], calendar: cal).nextWindowOpening(after: now) == nil,
           "no windows ⇒ no advisory opening")
+
+    // deleteAll() unlinks EVERY vault under the root (the "Uninstall + delete data"
+    // path), leaving the list empty. Uses an isolated root so it can't disturb the
+    // shared-root cases above.
+    do {
+        let wipeRoot = fm.temporaryDirectory.appendingPathComponent("vault-wipe-\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: wipeRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: wipeRoot) }
+        let wreg = VaultRegistry(root: wipeRoot)
+        for (i, label) in ["A", "B", "C"].enumerated() {
+            guard case .success(let e) = wreg.create(label: label, now: Date(timeIntervalSince1970: Double(i))) else {
+                fail("reg/deleteall-setup", "create failed"); return
+            }
+            touch(e.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        }
+        check("reg/deleteall-setup-3", wreg.list().count == 3, "three vaults created for the wipe")
+        let removed = wreg.deleteAll()
+        check("reg/deleteall-removes-all", removed == 3 && wreg.list().isEmpty,
+              "deleteAll unlinks every vault ⇒ count 3, list now empty")
+    }
 }

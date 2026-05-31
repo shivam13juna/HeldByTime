@@ -230,7 +230,7 @@ private func firstRunSetupTests() {
     let schedule = Schedule(windows: [DailyWindow(start: TimeOfDay(hour: 4, minute: 0)!,
                                                   end: TimeOfDay(hour: 5, minute: 0)!)], calendar: cal)
     let password = "correct horse battery staple"
-    let notes = Array("admin pw: hunter2\nCanopy: swordfish".utf8)
+    let notes = Array("account: hunter2\nservice: swordfish".utf8)
 
     func freshSetup(_ configure: (FakeSelfTestServices) -> Void = { _ in })
         -> (FirstRunSetup, VaultStore, FakeSeal, URL) {

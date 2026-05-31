@@ -30,7 +30,7 @@
 //      intact (the shape the re-seal agent iterates).
 //
 // Throwaway sentinel payload + scratch dirs ONLY — never a real secret. The real
-// admin / Canopy passwords are entered only via the GUI first-run (see E2E.md);
+// secrets are entered only via the GUI first-run (see E2E.md);
 // the live GUI launch + manual force-kill + system-wide leak scan are that
 // checklist's job, since a windowed .app cannot be driven head­less from here.
 
@@ -139,7 +139,7 @@ func fileMode(_ url: URL) -> mode_t? {
 // LEG 1+2 — seal near-future, won't open early, opens at the round boundary
 // ======================================================================
 guard let r0 = latestRound() else {
-    fail("e2e/current-round", "real helper current-round failed (network/Canopy down?)")
+    fail("e2e/current-round", "real helper current-round failed (network/content-filter down?)")
     exit(1)
 }
 pass("e2e/current-round")   // a drand-verified round through the real helper

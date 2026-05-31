@@ -37,6 +37,7 @@ public enum DiagnosticEvent {
     case unlock(success: Bool)              // coarse on purpose (no password-vs-corrupt oracle)
     case quarantine(side: String, sha256Hex: String, reason: String)  // I6 hash-only record
     case agentRegistered(success: Bool)     // the LaunchAgent (re)install outcome
+    case agentRemoved(success: Bool)        // the LaunchAgent uninstall (bootout + plist delete) outcome
 }
 
 /// Appends non-secret events to a small capped text file and reads them back.
@@ -137,6 +138,8 @@ public struct DiagnosticLog {
             return "quarantined \(side) copy: \(reason) (sha256 \(hash))"
         case .agentRegistered(let ok):
             return ok ? "re-seal agent (re)registered" : "re-seal agent registration skipped/failed"
+        case .agentRemoved(let ok):
+            return ok ? "re-seal agent removed (uninstall)" : "re-seal agent removal failed (uninstall)"
         }
     }
 

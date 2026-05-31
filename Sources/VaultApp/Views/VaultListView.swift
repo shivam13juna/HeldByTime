@@ -6,6 +6,7 @@
 // vault's contents or sealed bytes.
 
 import SwiftUI
+import AppKit
 
 struct VaultListView: View {
     @EnvironmentObject private var model: AppModel
@@ -15,6 +16,10 @@ struct VaultListView: View {
     @State private var renameText = ""
     /// Delete: the targeted vault (drives the type-to-confirm sheet).
     @State private var deleteTarget: VaultEntry?
+    /// Uninstall: drives the confirm sheet; the fallback alert shows only if the
+    /// app couldn't move itself to the Trash (translocation / read-only location).
+    @State private var showUninstall = false
+    @State private var trashFallback = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -56,6 +61,18 @@ struct VaultListView: View {
             Text("Choose a new name for this vault. The name is just a label — it is "
                  + "not part of the lock.")
         }
+        .sheet(isPresented: $showUninstall) {
+            UninstallSheet(vaultCount: model.entries.count) { deleteVaults in
+                performUninstall(deleteVaults: deleteVaults)
+            }
+        }
+        .alert("Finish in the Finder", isPresented: $trashFallback) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("EncryptedVault's background helper has been removed (and any data "
+                 + "you chose to delete is gone). To finish, drag EncryptedVault to "
+                 + "the Trash.")
+        }
     }
 
     private var header: some View {
@@ -78,6 +95,30 @@ struct VaultListView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+
+                // App-level overflow at the far right of the header, after the
+                // per-list actions — a quiet menu, never a primary control. Appearance
+                // is a GLOBAL app preference (ui.json), so it lives here, reachable
+                // without unlocking any vault, rather than buried in a per-vault screen.
+                Menu {
+                    Picker("Appearance", selection: Binding(
+                        get: { model.uiPrefs.appearance },
+                        set: { model.applyAppearance($0) })) {
+                        ForEach(Appearance.allCases) { Text($0.label).tag($0) }
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) { showUninstall = true } label: {
+                        Label("Uninstall application…", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.title3)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions")
             }
         }
     }
@@ -110,6 +151,30 @@ struct VaultListView: View {
     private var renameIsPresented: Binding<Bool> {
         Binding(get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } })
+    }
+
+    /// Remove the background helper (+ optionally wipe data) via AppModel, then move
+    /// the .app itself to the Trash and quit — the auto-trash uninstall.
+    private func performUninstall(deleteVaults: Bool) {
+        model.uninstallApplication(deleteVaults: deleteVaults) { _ in
+            trashSelfAndQuit()
+        }
+    }
+
+    /// Move this app bundle to the Trash, then terminate. If the move fails (e.g.
+    /// Gatekeeper App Translocation or a read-only location), fall back to a notice
+    /// asking the user to drag it to the Trash — never silently do nothing.
+    private func trashSelfAndQuit() {
+        NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, error in
+            DispatchQueue.main.async {
+                if error == nil {
+                    NSApplication.shared.terminate(nil)
+                } else {
+                    model.refreshEntries()   // data may be gone — don't show stale rows
+                    trashFallback = true
+                }
+            }
+        }
     }
 }
 
@@ -163,7 +228,10 @@ struct VaultRow: View {
             .help("Rename this vault")
 
             Button(action: onOpen) {
-                Label("Open", systemImage: "lock.open")
+                // Closed padlock: this row only ever shows a vault in its locked
+                // state (the list never unlocks); "Open" is the action, lock.fill
+                // the current state.
+                Label("Open", systemImage: "lock.fill")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -244,5 +312,85 @@ struct DeleteVaultSheet: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+}
+
+/// Confirm uninstalling the whole application. It ALWAYS removes the background
+/// re-seal helper and moves the app to the Trash. The opt-in checkbox ALSO wipes
+/// every vault and all logs; because that is irreversible — and to match the
+/// deliberate friction of single-vault delete — it requires typing a confirmation
+/// phrase before the destructive button arms.
+struct UninstallSheet: View {
+    /// How many vaults exist now (for the destructive button's label).
+    let vaultCount: Int
+    /// Invoked on confirm with whether to ALSO wipe all vault data. The presenter
+    /// performs the removal + auto-trash.
+    let onConfirm: (_ deleteVaults: Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var deleteVaults = false
+    @State private var typed = ""
+
+    /// The phrase the user must type to arm the data-wiping path.
+    private static let confirmPhrase = "delete my vaults"
+    /// Armed unless the destructive box is ticked without the exact phrase typed.
+    private var armed: Bool { !deleteVaults || typed == Self.confirmPhrase }
+
+    private var confirmLabel: String {
+        guard deleteVaults else { return "Uninstall application" }
+        return vaultCount > 0
+            ? "Uninstall and delete \(vaultCount) vault\(vaultCount == 1 ? "" : "s")"
+            : "Uninstall and delete all data"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Uninstall this application?", systemImage: "trash")
+                .font(.title2).bold()
+
+            Text("This removes EncryptedVault's background re-seal helper and moves "
+                 + "the app to the Trash. **Your vaults are kept** — reinstalling "
+                 + "EncryptedVault re-opens them on their schedule.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle(isOn: $deleteVaults.animation()) {
+                Text("Also permanently delete all my vaults and logs")
+            }
+            .toggleStyle(.checkbox)
+
+            if deleteVaults {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("This **permanently** deletes every vault and everything "
+                         + "sealed inside — it is **not** moved to the Trash and "
+                         + "**cannot** be recovered, even with the password.")
+                        .font(.callout).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Type “\(Self.confirmPhrase)” to confirm:")
+                        .font(.callout).foregroundStyle(.secondary)
+                    TextField(Self.confirmPhrase, text: $typed)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                }
+            }
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
+                Button(role: deleteVaults ? .destructive : nil) {
+                    let wipe = deleteVaults
+                    dismiss()
+                    onConfirm(wipe)
+                } label: { Text(confirmLabel) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!armed)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
     }
 }

@@ -6,7 +6,7 @@
 # absent everywhere durable.
 #
 # Use a THROWAWAY sentinel during the test launch (type it into the notes, e.g.
-# "LEAKPROBE-7f3a"), NOT your real admin/Canopy password — so this scan can search
+# "LEAKPROBE-7f3a"), NOT a real secret of yours — so this scan can search
 # for it in cleartext without itself writing your real secret anywhere.
 #
 # Usage:  Tools/scan_leak.sh <SENTINEL>
@@ -22,7 +22,7 @@ if [ -z "$SENTINEL" ]; then
 fi
 
 APP_SUPPORT="$HOME/Library/Application Support/EncryptedVault"
-BUNDLE_ID="com.shivam.encryptedvault"
+BUNDLE_ID="app.encryptedvault"
 
 # Durable locations a standard account can write, where decrypted notes could
 # accidentally land (state restoration, autosave, caches, temp, crash reports).

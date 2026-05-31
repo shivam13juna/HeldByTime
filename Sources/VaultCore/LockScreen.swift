@@ -68,7 +68,7 @@ enum LockScreen {
                 title: "Offline",
                 message: "Can't reach the time-lock network (drand) to verify the time. "
                     + "The vault stays sealed until you're back online. "
-                    + "If you use Canopy, make sure api.drand.sh is whitelisted.",
+                    + "If a content filter or firewall is active, make sure api.drand.sh is allow-listed.",
                 untilLocalTime: nil, untilRelative: nil, canPrompt: false, canRetry: true)
 
         case .failClosed(let reason):

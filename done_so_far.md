@@ -351,7 +351,7 @@ HTTP-fetch + verify + decrypt path end to end.
   must terminate the subprocess. Treat the helper's internal timeout as best-effort.
 - **Endpoints** (`api.drand.sh`, `api2`, `api3`) live only in the Go helper (Swift talks
   to the helper, not drand), so they are intentionally **not** in the cross-checked
-  `constants.json`. They must be Canopy-whitelisted (Task 8 self-test verifies).
+  `constants.json`. They must be allow-listed by any content filter (Task 8 self-test verifies).
 - The helper does **one** operation per process and exits; `lastSigErr` state is per-process.
 
 Current state: **73 checks, all PASS.**
@@ -390,7 +390,7 @@ listed here as the **boundary contract** the Swift wrapper must honour exactly.
    to `spec/constants.json` **and** `Constants.swift` **and** `helper/internal/constants`
    **and** the `FORMAT.md` table in the same change, or the consistency test fails.
    (Helper-only values like the endpoint list stay in the Go helper.)
-6. **Canopy/network:** the helper's endpoints must be Canopy-whitelisted or the vault
+6. **Content filter / network:** the helper's endpoints must be allow-listed or the vault
    deadlocks; `api.drand.sh` is the primary. Self-test (Task 8) will verify reachability.
 
 ---
@@ -763,9 +763,9 @@ text-system / state-restoration pieces are type-checked + statically guarded; th
   dry-run check / `shasum` / `plutil -lint`, and that the hash is **compiled in**
   (`AppConfiguration` uses `BundledHelper.sha256`, `build.sh` injects into
   `BundledHelper.swift`). The empirical proof is producing the verified bundle by running it.
-- Verified once on this machine (M3 Max, swiftc 6.2.4, SDK 26.2): bundle layout
+- Verified once on this machine (Apple Silicon, swiftc 6.2.4, SDK 26.2): bundle layout
   `Contents/{MacOS/EncryptedVault, Helpers/vaultseal, Info.plist, PkgInfo, _CodeSignature}`,
-  ad-hoc signature, `Identifier=com.shivam.encryptedvault`, embedded == compiled-in hash
+  ad-hoc signature, `Identifier=app.encryptedvault`, embedded == compiled-in hash
   `1a89b3…61d4`. A **live launch** is left to Task 12 (E2E across a real window boundary).
 
 **Task 12 — End-to-end test across a real window boundary. ✅** `./run_tests` green
@@ -804,7 +804,7 @@ in the offline harness (which is offline by design):
   <sentinel>` sweeps the real durable locations — vault dir, Saved Application State,
   caches, prefs, crash reports, `$TMPDIR` — for a plaintext leak, relaunch → defensive
   re-seal, offline test). These GUI behaviours can't run headless; the checklist is the
-  user's to drive, with a throwaway sentinel (NOT the real admin/Canopy passwords).
+  user's to drive, with a throwaway sentinel (NOT real secrets).
 - **Gate (`run_tests` step 7f, static — `e2e/harness-gate`):** like Task 11's
   `build/bundling-gate`, a fence for a thing the offline harness can't run itself.
   Asserts `e2e_test` + `Tools/scan_leak.sh` exist+executable, `tests/e2e/main.swift` +
@@ -817,7 +817,7 @@ in the offline harness (which is offline by design):
   suite, static gate, live E2E leg, or GUI checklist step). The honest ceiling is
   restated unchanged: a strong wall against *impulsive* out-of-window access, NOT an
   absolute cage against a *premeditated* owner during an open window (mitigated socially
-  by the sister's admin-password backup; code-signing + self-test are integrity checks,
+  by a trusted third party's admin-password backup; code-signing + self-test are integrity checks,
   not a commitment boundary).
 - **Honest scope of what `e2e_test` green proves:** the ENGINE live path is verified
   end-to-end against real drand. The GUI-only behaviours (state restoration, editor
@@ -853,7 +853,7 @@ in the offline harness (which is offline by design):
 - **What remains is the user's, not code:** the `E2E.md` manual GUI checklist (the first
   live double-click launch, force-kill mid-window, `Tools/scan_leak.sh` system-wide leak
   sweep, offline test) and — once that is green — replacing the throwaway sentinel with the
-  real macOS-admin + Canopy passwords. **Reminder:** Canopy MUST whitelist `api.drand.sh`
+  real secrets. **Reminder:** your content filter MUST allow `api.drand.sh`
   or the vault deadlocks; forgetting the master password = permanent loss by design.
 - The build is feature-complete and verified for real use pending the GUI checklist. There
   is no Task 13 — Task 12 was the last.

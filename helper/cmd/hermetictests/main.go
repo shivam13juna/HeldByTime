@@ -244,7 +244,7 @@ func logicTests() {
 // black-holed (this whole harness runs behind a dead proxy). An all-down probe
 // is still a SUCCESSFUL operation: exit 0, a well-formed JSON report on stdout,
 // ok_count == 0, and total == 3. This proves the diagnostic path emits a usable
-// report even when fully offline -- exactly the fragile-Canopy scenario the
+// report even when fully offline -- exactly the fragile-network scenario the
 // first-run self-test must surface rather than crash on.
 func endpointsCLITest(bin string) {
 	cmd := exec.Command(bin, "endpoints")
