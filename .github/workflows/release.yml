@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Full history so build.sh's git-commit-count build number is real (a
           # shallow clone would collapse CFBundleVersion to 1).
@@ -41,7 +41,7 @@ jobs:
           echo "tag $GITHUB_REF_NAME matches VERSION file"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: helper/go.mod
           cache-dependency-path: helper/go.sum
@@ -71,7 +71,7 @@ jobs:
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact (manual runs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: EncryptedVault-app
           path: |
@@ -81,7 +81,7 @@ jobs:
       - name: Publish to the Releases section
         # Only on tag pushes — a manual run just produces the artifact above.
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ steps.package.outputs.zip }}
