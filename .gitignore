@@ -2,7 +2,7 @@
 /build/
 
 # macOS
-.DS_Store
+**/*.DS_Store
 
 # Go helper build cache (vendored deps are committed; binaries are not)
 /helper/vaultseal
