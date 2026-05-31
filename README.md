@@ -137,10 +137,10 @@ and secrets, and create the vault. It seals immediately to the next window.
 
 | Document | What's in it |
 |---|---|
-| [app.md](app.md) | Design rationale and threat model |
-| [FORMAT.md](FORMAT.md) | On-disk file format |
-| [SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) | The non-negotiable security properties |
-| [E2E.md](E2E.md) | Live, across-a-real-window verification steps |
+| [docs/app.md](docs/app.md) | Design rationale and threat model |
+| [docs/FORMAT.md](docs/FORMAT.md) | On-disk file format |
+| [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md) | The non-negotiable security properties |
+| [docs/E2E.md](docs/E2E.md) | Live, across-a-real-window verification steps |
 
 ---
 

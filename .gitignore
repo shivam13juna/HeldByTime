@@ -4,6 +4,9 @@
 # macOS
 **/*.DS_Store
 
+# Editor/agent local dirs
+/.claude/
+
 # Go helper build cache (vendored deps are committed; binaries are not)
 /helper/vaultseal
 /helper/constdump

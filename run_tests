@@ -75,7 +75,7 @@ fi
 
 # ---- 2. Placeholder scan (our deliverables only; vendored third-party code excluded) ----
 PH='(TODO|FIXME|XXX|PLACEHOLDER|HACK)'
-PH_SCAN=(grep -rnE "$PH" --exclude-dir=vendor FORMAT.md SECURITY_INVARIANTS.md spec Sources Tools helper tests)
+PH_SCAN=(grep -rnE "$PH" --exclude-dir=vendor docs/FORMAT.md docs/SECURITY_INVARIANTS.md spec Sources Tools helper tests)
 if "${PH_SCAN[@]}" 2>/dev/null | grep -q .; then
   emit FAIL placeholder/scan "placeholder token found in deliverables"
   "${PH_SCAN[@]}" 2>/dev/null | sed 's/^/    /'
@@ -108,7 +108,7 @@ fi
 # ---- 5. Constants consistency check ----
 if [ -f "$BUILD/constants-swift.json" ] && [ -f "$BUILD/constants-go.json" ]; then
   if swiftc -O tests/consistency_check.swift -o "$BUILD/consistency_check" 2> "$BUILD/cc-build.log"; then
-    run_exec "$BUILD/consistency_check" consistency spec/constants.json "$BUILD/constants-swift.json" "$BUILD/constants-go.json" FORMAT.md
+    run_exec "$BUILD/consistency_check" consistency spec/constants.json "$BUILD/constants-swift.json" "$BUILD/constants-go.json" docs/FORMAT.md
   else
     emit FAIL consistency/build "consistency_check failed to compile (see build/cc-build.log)"
   fi
@@ -407,7 +407,7 @@ E2E_MAIN="tests/e2e/main.swift"
 for f in e2e_test Tools/scan_leak.sh; do
   if [ ! -x "$f" ]; then emit FAIL e2e/script-present "$f missing or not executable"; e2e_ok=0; fi
 done
-for f in "$E2E_MAIN" E2E.md; do
+for f in "$E2E_MAIN" docs/E2E.md; do
   if [ ! -f "$f" ]; then emit FAIL e2e/file-present "$f missing"; e2e_ok=0; fi
 done
 if [ -f "$E2E_MAIN" ]; then
