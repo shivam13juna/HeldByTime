@@ -75,6 +75,34 @@ enum ResealAgentInstaller {
         return true
     }
 
+    /// Remove the re-seal LaunchAgent — the inverse of `installOrRefresh`. Unloads
+    /// the job from the user's GUI session and deletes its plist so launchd will
+    /// not reload it at the next login. Touches ONLY the agent (its own label +
+    /// plist) — it has no vault parameters and so CANNOT reach a vault. Best-effort
+    /// and injectable the same way as install (`fileExists`, `removeFile`, the
+    /// launchctl `run`, plus `uid`/`plistURL`), so the act is unit-testable offline
+    /// (no launchd, no real filesystem). Never logs; handles no secret.
+    ///
+    /// Returns true if the agent is gone afterwards (removed now, or already
+    /// absent); false ONLY if the plist exists but could not be deleted.
+    @discardableResult
+    static func uninstall(
+        plistURL: URL = Self.plistURL,
+        uid: uid_t = getuid(),
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        removeFile: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
+        run: ([String]) -> Void = Self.launchctl
+    ) -> Bool {
+        let domain = "gui/\(uid)"
+        // Unload the loaded job by LABEL (harmless if it isn't loaded). By label,
+        // not by plist path, so it still works if the plist is already gone.
+        run(["bootout", "\(domain)/\(LaunchAgentPlist.resealLabel)"])
+        // Delete the plist so launchd won't reload it at the next login.
+        guard fileExists(plistURL.path) else { return true }   // already absent ⇒ done
+        do { try removeFile(plistURL) } catch { return false } // couldn't delete ⇒ failed
+        return true
+    }
+
     /// Run a launchctl subcommand, discarding output and ignoring failure. This is
     /// the live default for `installOrRefresh(run:)`; tests inject a recording fake.
     static func launchctl(_ args: [String]) {

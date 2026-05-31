@@ -7,7 +7,6 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel   // app-global appearance
     @EnvironmentObject private var vault: VaultModel // this vault's schedule + log
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SchedulePrefs = .default
@@ -40,18 +39,6 @@ struct SettingsView: View {
                             } label: { Label("Add window", systemImage: "plus") }
                                 .buttonStyle(.borderless)
                         }
-                    }
-
-                    // Cosmetic appearance choice. Applies immediately (it isn't part
-                    // of the schedule draft) and never affects the lock.
-                    SectionCard(title: "Appearance", systemImage: "circle.lefthalf.filled") {
-                        Picker("Appearance", selection: Binding(
-                            get: { model.uiPrefs.appearance },
-                            set: { model.applyAppearance($0) })) {
-                            ForEach(Appearance.allCases) { Text($0.label).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
                     }
 
                     // Read-only, secret-free activity log for troubleshooting.

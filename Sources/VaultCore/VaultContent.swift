@@ -2,7 +2,7 @@
 //
 // The PW01 inner layer seals an opaque `[UInt8]` blob (app.md §4); this is the
 // concrete shape of those bytes for the UI: free-form text notes plus a list of
-// labelled high-value secrets (the macOS admin password and the Canopy password
+// labelled high-value secrets (e.g. an account password and an app password,
 // per app.md §2, but any number of labelled secrets is supported). Keeping the
 // model in VaultCore (no SwiftUI) means its serialization and the masked-render
 // rule are unit-testable; the SwiftUI editor only presents it.
@@ -47,7 +47,7 @@ struct VaultContent: Codable, Equatable {
     }
 
     /// The first-run template: empty notes and a single blank secret row to
-    /// start from. The user labels it (e.g. "macOS admin password", "Canopy
+    /// start from. The user labels it (e.g. "Account password", "App
     /// password" per app.md §2) and adds as many more as they want — nothing
     /// here is hard-coded to a specific secret.
     static var initialTemplate: VaultContent {

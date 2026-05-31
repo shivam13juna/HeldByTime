@@ -201,6 +201,31 @@ final class AppModel: ObservableObject {
         try? uiPrefs.save(to: env.uiPrefsURL)
     }
 
+    // MARK: - Uninstall
+
+    /// Prepare to remove the app: take down its background footprint and, if
+    /// `deleteVaults`, wipe its data — so the user can then trash the .app (the
+    /// VIEW performs the final auto-trash + quit once this completes).
+    ///
+    /// Order: (1) bootout + delete the re-seal LaunchAgent; (2) when `deleteVaults`,
+    /// unlink EVERY vault and the app-scope residue (app log + appearance) — the
+    /// whole EncryptedVault data tree, each unlinked and NEVER Trashed. It only ever
+    /// DESTROYS; it never reveals a secret. Runs off the main thread (launchctl +
+    /// filesystem) and reports the agent-removal outcome back on the main thread.
+    func uninstallApplication(deleteVaults: Bool, completion: @escaping (Bool) -> Void) {
+        let log = appLog
+        let env = self.env
+        DispatchQueue.global(qos: .utility).async {
+            let agentGone = ResealAgentInstaller.uninstall()
+            log.record(.agentRemoved(success: agentGone), source: .app)
+            if deleteVaults {
+                env.registry.deleteAll()                                  // every vault dir
+                try? FileManager.default.removeItem(at: env.vaultsRoot)   // app.log, ui.json, the root
+            }
+            DispatchQueue.main.async { completion(agentGone) }
+        }
+    }
+
     // MARK: - Quit
 
     /// Seal-on-graceful-quit (Cmd-Q / menu). Seals the open vault if any, then

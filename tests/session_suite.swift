@@ -56,8 +56,8 @@ func runSessionSuite() {
     let emptySchedule = Schedule(windows: [], calendar: cal)
 
     let password = Array("correct horse battery staple".utf8)
-    let notes1 = Array("admin pw: hunter2\nCanopy: swordfish".utf8)
-    let notes2 = Array("admin pw: hunter2 (rotated)\nCanopy: swordfish".utf8)
+    let notes1 = Array("account: hunter2\nservice: swordfish".utf8)
+    let notes2 = Array("account: hunter2 (rotated)\nservice: swordfish".utf8)
 
     func freshStore(_ sched: Schedule = schedule) -> (VaultStore, FakeSeal, URL) {
         let dir = sessTmpDir()

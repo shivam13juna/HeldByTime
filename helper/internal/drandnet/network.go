@@ -35,7 +35,7 @@ import (
 
 // DefaultEndpoints are the compiled-in drand HTTP roots. api.drand.sh is the
 // primary; the others are independent mirrors used to cross-check the latest
-// round. These hosts must be reachable (Canopy-whitelisted) or the vault
+// round. These hosts must be reachable (allow-listed through any content filter) or the vault
 // deadlocks; the Task 8 self-test verifies reachability.
 var DefaultEndpoints = []string{
 	"https://api.drand.sh",

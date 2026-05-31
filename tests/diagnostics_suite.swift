@@ -53,6 +53,11 @@ func runDiagnosticsSuite() {
     check("diag/quarantine-hash-only", q.contains("deadbeef") && q.contains("outer != manifest"),
           "quarantine line is hash + reason, never raw bytes")
 
+    // Agent uninstall outcome renders as a non-secret, human-readable line.
+    log.record(.agentRemoved(success: true), source: .app)
+    check("diag/agent-removed-phrasing", log.tail().last?.contains("re-seal agent removed") == true,
+          "agent uninstall must be human-readable and secret-free")
+
     // Clear empties it.
     log.clear()
     check("diag/clear", log.tail().isEmpty, "clear() removes all entries")
