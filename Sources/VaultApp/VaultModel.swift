@@ -47,14 +47,22 @@ final class VaultModel: ObservableObject, Identifiable {
 
     let config: AppConfiguration
 
+    /// Test seam: builds the VaultStore for this vault. nil ⇒ the live store (real
+    /// HelperRunner + VaultSealClient). Injected so offline tests can drive the model
+    /// with a FakeSeal-backed store; the production call site passes nothing, so its
+    /// behaviour is unchanged.
+    private let storeFactory: ((AppConfiguration, Schedule) -> VaultStore)?
+
     /// This vault's secret-free diagnostics trail (shared with the background
     /// agent). Exposed so DiagnosticsView can read it; logging stays in this model.
     var diagnosticsLog: DiagnosticLog { DiagnosticLog(url: config.diagnosticsLogURL) }
 
-    init(entry: VaultEntry, env: AppEnvironment) {
+    init(entry: VaultEntry, env: AppEnvironment,
+         makeStore: ((AppConfiguration, Schedule) -> VaultStore)? = nil) {
         self.id = entry.id
         self.label = entry.meta.label
         self.config = env.configuration(for: entry)
+        self.storeFactory = makeStore
         self.schedulePrefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
     }
 
@@ -65,10 +73,48 @@ final class VaultModel: ObservableObject, Identifiable {
     // MARK: - engine wiring
 
     private func makeStore() -> VaultStore {
+        if let storeFactory { return storeFactory(config, schedulePrefs.schedule) }
         let runner = HelperRunner(executableURL: config.helperURL,
                                   expectedSHA256: config.compiledHelperSHA256)
         let client = VaultSealClient(runner: runner)
         return VaultStore(dir: config.vaultDir, client: client, schedule: schedulePrefs.schedule)
+    }
+
+    // MARK: - Pure reducers (no I/O, no async — unit-tested headless)
+
+    /// Map a load result to the per-vault phase. PURE: the authoritative
+    /// locked-vs-open decision was already made by `VaultStore.load()`; this only
+    /// chooses what to show, and `.openWindow` is the ONLY result that exposes the
+    /// password prompt. `now` only affects the lock screen's display "until" text.
+    static func phase(for result: VaultLoadResult, calendar: Calendar, now: Date = Date()) -> VaultPhase {
+        switch result {
+        case .openWindow(let window, let payload):
+            return .unlockPrompt(window: window, payload: payload)
+        case .lockedUntil, .resealed, .offline, .failClosed:
+            return .locked(LockScreen.describe(result, calendar: calendar, now: now))
+        }
+    }
+
+    /// Map a load outcome to the SECRET-FREE diagnostic events to record: the load
+    /// kind + verified round, then one I6 hash-only line per quarantine. PURE — it
+    /// carries only round numbers, a closed kind, and the hash/reason, never a
+    /// payload (I13). `logOutcome` just writes what this returns.
+    static func events(for outcome: VaultLoadOutcome) -> [DiagnosticEvent] {
+        let kind: DiagnosticEvent.LoadKind
+        let round: UInt64?
+        switch outcome.result {
+        case .openWindow(let window, _): kind = .openWindow; round = window.startRound
+        case .lockedUntil(let r):        kind = .locked;     round = r
+        case .resealed(let window):      kind = .resealed;   round = window.startRound
+        case .offline:                   kind = .offline;    round = nil
+        case .failClosed:                kind = .failClosed; round = nil
+        }
+        var events: [DiagnosticEvent] = [.checkedVault(kind, round: round)]
+        for q in outcome.quarantines {
+            events.append(.quarantine(side: q.side == .primary ? "primary" : "backup",
+                                       sha256Hex: q.sha256Hex, reason: q.reason))
+        }
+        return events
     }
 
     // MARK: - load / unlock / edit / lock
@@ -90,14 +136,8 @@ final class VaultModel: ObservableObject, Identifiable {
             DispatchQueue.main.async {
                 self.loadInFlight = false
                 self.logOutcome(outcome)
-                switch outcome.result {
-                case .openWindow(let window, let payload):
-                    self.unlockError = nil
-                    self.phase = .unlockPrompt(window: window, payload: payload)
-                case .lockedUntil, .resealed, .offline, .failClosed:
-                    self.phase = .locked(LockScreen.describe(outcome.result,
-                                                             calendar: self.schedulePrefs.calendar))
-                }
+                if case .openWindow = outcome.result { self.unlockError = nil }
+                self.phase = Self.phase(for: outcome.result, calendar: self.schedulePrefs.calendar)
             }
         }
     }
@@ -106,21 +146,8 @@ final class VaultModel: ObservableObject, Identifiable {
     /// vault's secret-free trail — round numbers and a closed outcome kind only,
     /// never any decrypted payload (I13).
     private func logOutcome(_ outcome: VaultLoadOutcome) {
-        let kind: DiagnosticEvent.LoadKind
-        let round: UInt64?
-        switch outcome.result {
-        case .openWindow(let window, _): kind = .openWindow; round = window.startRound
-        case .lockedUntil(let r):        kind = .locked;     round = r
-        case .resealed(let window):      kind = .resealed;   round = window.startRound
-        case .offline:                   kind = .offline;    round = nil
-        case .failClosed:                kind = .failClosed; round = nil
-        }
         let log = diagnosticsLog
-        log.record(.checkedVault(kind, round: round), source: .app)
-        for q in outcome.quarantines {
-            log.record(.quarantine(side: q.side == .primary ? "primary" : "backup",
-                                    sha256Hex: q.sha256Hex, reason: q.reason), source: .app)
-        }
+        for event in Self.events(for: outcome) { log.record(event, source: .app) }
     }
 
     /// Try to decrypt the open-window payload with the entered password. A wrong
@@ -138,27 +165,31 @@ final class VaultModel: ObservableObject, Identifiable {
         unlockError = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let result = VaultSession.open(store: store, window: window, payload: payload, password: pw)
-            DispatchQueue.main.async {
-                self.isUnlocking = false
-                switch result {
-                case .failure:
-                    // Deliberately generic — never reveal whether it was the password
-                    // vs a structural problem, and never construct partial content.
-                    // The log is equally coarse (no password-vs-corrupt oracle).
-                    self.diagnosticsLog.record(.unlock(success: false), source: .app)
-                    self.unlockError = "Could not unlock. Check your password and try again."
-                case .success(let opened):
-                    do {
-                        self.content = try VaultContent.decode(opened.notes)
-                    } catch {
-                        self.phase = .failed("The vault decrypted but its contents are unreadable.")
-                        return
-                    }
-                    self.diagnosticsLog.record(.unlock(success: true), source: .app)
-                    self.unlockError = nil
-                    self.phase = .unlocked(opened.session)
-                }
+            DispatchQueue.main.async { self.applyOpenResult(result) }
+        }
+    }
+
+    /// Apply a `VaultSession.open` result to state — the main-thread half of
+    /// `unlock`, split out so the routing is unit-testable without a run loop.
+    /// Fail-closed: a failure is deliberately generic (never a password-vs-corrupt
+    /// oracle) and builds NO content; a success that decrypts but won't decode lands
+    /// in `.failed`, never partial content. The log is equally coarse.
+    func applyOpenResult(_ result: Result<(notes: [UInt8], session: VaultSession), StoreError>) {
+        isUnlocking = false
+        switch result {
+        case .failure:
+            diagnosticsLog.record(.unlock(success: false), source: .app)
+            unlockError = "Could not unlock. Check your password and try again."
+        case .success(let opened):
+            do {
+                content = try VaultContent.decode(opened.notes)
+            } catch {
+                phase = .failed("The vault decrypted but its contents are unreadable.")
+                return
             }
+            diagnosticsLog.record(.unlock(success: true), source: .app)
+            unlockError = nil
+            phase = .unlocked(opened.session)
         }
     }
 

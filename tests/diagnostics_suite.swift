@@ -58,6 +58,51 @@ func runDiagnosticsSuite() {
     check("diag/clear", log.tail().isEmpty, "clear() removes all entries")
 
     runMergeChecks()
+    runLocalizeChecks()
+}
+
+// MARK: - Display localisation (UTC on disk → local time in the viewer)
+
+private func runLocalizeChecks() {
+    // A fixed zone (IST, +05:30, no DST) makes the expected strings exact and
+    // independent of the machine the tests run on.
+    let ist = TimeZone(identifier: "Asia/Kolkata")!
+
+    // A stored UTC line is re-rendered in IST, keeping the original UTC in parens.
+    // 12:34:56Z + 05:30 = 18:04:56 local.
+    let utcLine = "2026-05-30T12:34:56Z [app] app launched"
+    check("diag/localize-ist",
+          DiagnosticLog.localize(utcLine, in: ist)
+            == "2026-05-30 18:04:56 IST (12:34:56Z) [app] app launched",
+          "UTC stamp must render in the given zone (with zone letters + original UTC)")
+
+    // Only the timestamp changes — the source tag and phrase are preserved verbatim.
+    check("diag/localize-keeps-content",
+          DiagnosticLog.localize(utcLine, in: ist).hasSuffix("[app] app launched"),
+          "the event text after the timestamp must be untouched")
+
+    // A line without a parseable leading timestamp is returned unchanged (old/blank).
+    let junk = "not-a-timestamp here"
+    check("diag/localize-passthrough",
+          DiagnosticLog.localize(junk, in: ist) == junk,
+          "non-timestamp lines must pass through unchanged")
+
+    // Merged view: ordering still follows the UTC timestamp (chronological), while
+    // each displayed line is localised. 10:00:00Z/10:00:15Z + 05:30 = 15:30:00/15.
+    let a = ["2026-05-27T10:00:00Z [app] app launched"]
+    let b = ["2026-05-27T10:00:15Z [agent] background agent ran → locked"]
+    let merged = DiagnosticLog.merge([(tag: "Vault A", lines: a), (tag: "Vault B", lines: b)],
+                                     displayIn: ist)
+    check("diag/merge-localized",
+          merged.count == 2
+            && merged[0] == "[Vault A] 2026-05-27 15:30:00 IST (10:00:00Z) [app] app launched"
+            && merged[1].hasPrefix("[Vault B] 2026-05-27 15:30:15 IST (10:00:15Z)"),
+          "merged lines keep UTC ordering but display local (IST) time")
+
+    // merge() WITHOUT displayIn is unchanged (raw UTC) — back-compatible default.
+    check("diag/merge-default-utc",
+          DiagnosticLog.merge([(tag: "Vault A", lines: a)]) == ["[Vault A] " + a[0]],
+          "default merge (no displayIn) must keep the raw UTC line")
 }
 
 // MARK: - Merge across logs (the engine helper behind the app's merged activity view)

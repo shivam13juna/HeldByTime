@@ -84,6 +84,7 @@ struct DiagnosticsView: View {
     }
 
     private func reload() {
-        lines = log.tail()
+        // Stored UTC → the Mac's current zone for display (storage stays UTC).
+        lines = log.tail().map { DiagnosticLog.localize($0) }
     }
 }

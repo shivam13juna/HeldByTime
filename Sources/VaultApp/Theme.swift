@@ -1,63 +1,32 @@
-// Theme.swift — the app's small design layer: a persisted appearance preference
-// (System / Light / Dark) and a handful of reusable, native-feeling building
-// blocks (a glass "card" surface, spacing tokens) so the screens stop being flat
-// stacks of default controls.
+// Theme.swift — the app's small SwiftUI design layer: reusable, native-feeling
+// building blocks (a glass "card" surface, spacing tokens, a glyph badge) so the
+// screens stop being flat stacks of default controls, plus the one SwiftUI-typed
+// piece of the appearance preference (its `.preferredColorScheme` mapping).
 //
-// NOTHING here is security-relevant: the appearance choice is a cosmetic, non-
-// secret preference stored as plain JSON beside the (also non-secret) schedule.
-// It lives in its OWN file (ui.json) so a missing/old install falls back to the
-// default WITHOUT touching schedule.json — the user's windows are never at risk
-// from a UI-prefs decode failure.
+// The appearance preference VALUE itself — the `Appearance` enum and the `UIPrefs`
+// persisted to ui.json — now lives in UIPrefs.swift, Foundation-only, so AppModel
+// can be unit-tested headless. Nothing here is security-relevant: the appearance
+// choice is a cosmetic, non-secret preference stored as plain JSON in its OWN file
+// (ui.json), independent of schedule.json, so a UI-prefs decode failure can never
+// put the user's windows at risk.
 
 import SwiftUI
 import AppKit
 
-// MARK: - Appearance preference
+// MARK: - Appearance → SwiftUI mapping
 
-/// The user's light/dark choice. `.system` follows the OS; the other two pin it.
-enum Appearance: String, Codable, CaseIterable, Identifiable {
-    case system, light, dark
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .system: return "System"
-        case .light:  return "Light"
-        case .dark:   return "Dark"
-        }
-    }
-
-    /// Maps to SwiftUI's `.preferredColorScheme` input. `nil` means "follow the
-    /// system", which is exactly what passing nil to that modifier does.
+/// The `Appearance` enum itself (and `UIPrefs`) live in UIPrefs.swift so they stay
+/// Foundation-only and headless-testable. The ONE SwiftUI-typed piece — the
+/// mapping to `.preferredColorScheme`'s input — stays here, in the only VaultApp
+/// file that needs SwiftUI for it. `nil` means "follow the system", which is
+/// exactly what passing nil to that modifier does.
+extension Appearance {
     var colorScheme: ColorScheme? {
         switch self {
         case .system: return nil
         case .light:  return .light
         case .dark:   return .dark
         }
-    }
-}
-
-/// Cosmetic, non-secret UI preferences. Persisted as plain JSON in its own file
-/// so it is independent of the schedule (a decode failure here can never clobber
-/// the user's windows). New fields should default so older files still decode.
-struct UIPrefs: Codable, Equatable {
-    var appearance: Appearance = .system
-
-    static let `default` = UIPrefs()
-
-    static func load(from url: URL) throws -> UIPrefs {
-        try JSONDecoder().decode(UIPrefs.self, from: Data(contentsOf: url))
-    }
-
-    func save(to url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
 
