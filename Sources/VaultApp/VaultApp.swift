@@ -51,11 +51,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Belt-and-suspenders: mark every window non-restorable too.
         for window in NSApplication.shared.windows { window.isRestorable = false }
+        // Wake-from-sleep is the one window-end trigger the in-app timer can miss (a
+        // laptop asleep past the window never ticked), so re-check the open vault on
+        // wake. AppKit-only API, so it lives here, not in the headless VaultModel.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake(_:)),
+            name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     /// We never participate in state restoration, so report no support (and the
     /// windows above are non-restorable regardless).
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { false }
+
+    /// On app-activation and on wake, immediately re-check the open vault's window —
+    /// forwarded into the model layer (which can't observe these AppKit events).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.recheckOpenVaultWindow()
+    }
+
+    @objc private func systemDidWake(_ notification: Notification) {
+        model?.recheckOpenVaultWindow()
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }

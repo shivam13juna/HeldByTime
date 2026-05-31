@@ -339,3 +339,20 @@ The weaker area is after the morning round has existed: the app must aggressivel
 close plaintext and reseal forward. For the stated goal, the most important work
 is not stronger cryptography. It is making the post-window cleanup unavoidable,
 visible, and fast.
+
+
+So indeed about this issue 1 we do nothing in round three.
+
+That is if you cannot reach the network at all you do nothing.
+
+So we can implement this issue of logging again when the window ends.
+
+But as i said if network not reachable do nothing.
+
+I think issue 2 and 3 are both about the same thing, but while vault is open, we can have heartbeat every 1 minute, "what's the current drand round now?" Then it compares that round R against the vault's committed end round (endRound, from the manifest). If R > endRound, the morning window is over → re-lock.
+
+about issue 4, dont' worry about it, 2 hours is enough. 
+
+other issues don't feel like actula issues. Now, how's backup being implemented, does backup make sense? BTW I think this application should have opption of exporting/importing, for migrating to new machine. 
+
+I get it, exported vault is not time-locked but it is password-locked, so it is still better than nothing. And we can also add a warning when exporting, "exported vault is not time-locked, be careful about where you store it and who you share it with". I don't think it's something that bothers me, as even if you export is, it's not unlockable before window arrives. We can add import/export vaults functionality in the three dots option. 

@@ -138,6 +138,16 @@ struct VaultStore {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true,
                                    attributes: [.posixPermissions: 0o700])
         }
+        try Self.excludeFromBackup(dir)
+    }
+
+    /// Set+verify `isExcludedFromBackup` on an existing directory (Time Machine +
+    /// iCloud). Fail-closed: we set the flag, drop Foundation's cached resource
+    /// values, re-read, and throw if it did not stick — a vault dir that cannot be
+    /// kept out of OS backups must never be treated as protected. Extracted from
+    /// `ensureDirectory()` so vault import can re-apply the same guarantee to a
+    /// freshly reconstituted directory.
+    static func excludeFromBackup(_ dir: URL) throws {
         var u = dir
         var values = URLResourceValues()
         values.isExcludedFromBackup = true

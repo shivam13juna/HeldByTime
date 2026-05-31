@@ -38,6 +38,8 @@ public enum DiagnosticEvent {
     case quarantine(side: String, sha256Hex: String, reason: String)  // I6 hash-only record
     case agentRegistered(success: Bool)     // the LaunchAgent (re)install outcome
     case agentRemoved(success: Bool)        // the LaunchAgent uninstall (bootout + plist delete) outcome
+    case vaultExported                      // a portable (.vault) copy of this vault was written
+    case vaultImported                      // this vault was reconstituted from a portable copy
 }
 
 /// Appends non-secret events to a small capped text file and reads them back.
@@ -140,6 +142,10 @@ public struct DiagnosticLog {
             return ok ? "re-seal agent (re)registered" : "re-seal agent registration skipped/failed"
         case .agentRemoved(let ok):
             return ok ? "re-seal agent removed (uninstall)" : "re-seal agent removal failed (uninstall)"
+        case .vaultExported:
+            return "exported a portable copy of this vault"
+        case .vaultImported:
+            return "imported this vault from a portable copy"
         }
     }
 
