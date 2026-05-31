@@ -270,4 +270,97 @@ func runAppModelSuite() {
             noVault == true && withVault == true,
             "sealForQuit ⇒ true with no open vault, and delegates to the open vault (safe) otherwise")
     }
+
+    // ===== Export / Import (portable .vault bundle) =====
+
+    // A vault exported to a .vault file and imported back ⇒ a NEW vault (fresh id)
+    // with byte-identical sealed contents, an "(imported)" label, both vaults listed,
+    // and a secret-free export event logged. (Backup-exclusion is checked separately.)
+    do {
+        let env = freshEnv()
+        let a = makeVault(env, "Migrate Me", at: 1000)
+        let vaultBytes = Data((0..<128).map { UInt8($0 & 0xff) })
+        try? vaultBytes.write(to: a.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        try? Data("{\"windows\":[]}".utf8).write(to: a.dir.appendingPathComponent("schedule.json"))
+        let model = AppModel(env: env)
+        model.refreshEntries()
+
+        let dest = env.vaultsRoot.appendingPathComponent("export.vault")
+        var exportOK = false
+        if case .success = model.exportVault(a, to: dest) { exportOK = true }
+        let fileThere = fm.fileExists(atPath: dest.path)
+        let logged = DiagnosticLog(url: env.configuration(for: a).diagnosticsLogURL)
+            .tail().contains { $0.contains("exported a portable copy") }
+
+        var newEntry: VaultEntry?
+        if case .success(let e) = model.importVault(from: dest) { newEntry = e }
+        let listed = env.registry.list()
+        let newBytes = newEntry.flatMap { try? Data(contentsOf: $0.dir.appendingPathComponent(VaultRegistry.vaultFileName)) }
+        let labelOK = newEntry?.meta.label.contains("imported") == true
+        let freshId = newEntry != nil && newEntry?.id != a.id
+        let bothListed = listed.contains { $0.id == a.id }
+            && (newEntry.map { ne in listed.contains { $0.id == ne.id } } ?? false)
+
+        amk("export-import-roundtrip",
+            exportOK && fileThere && logged && freshId && newBytes == vaultBytes && labelOK && bothListed,
+            "export→import ⇒ a new vault with identical sealed bytes, '(imported)' label, both listed, export logged")
+    }
+
+    // Import re-applies backup-exclusion to the reconstituted dir (fail-closed: import
+    // only SUCCEEDS if exclusion stuck, so success ⇒ the dir is excluded). Asserted
+    // on its own so the env-sensitive xattr read can't mask the roundtrip wiring.
+    do {
+        let env = freshEnv()
+        let a = makeVault(env, "X", at: 1000)
+        try? Data("sealed".utf8).write(to: a.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        let model = AppModel(env: env)
+        let dest = env.vaultsRoot.appendingPathComponent("x.vault")
+        _ = model.exportVault(a, to: dest)
+        var excluded = false
+        if case .success(let e) = model.importVault(from: dest) {
+            excluded = ((try? e.dir.resourceValues(forKeys: [.isExcludedFromBackupKey]))?.isExcludedFromBackup) == true
+        }
+        amk("export-import-backup-exclusion", excluded,
+            "an imported vault directory is excluded from OS backup (Time Machine / iCloud)")
+    }
+
+    // Exporting a vault with no sealed vault.dat ⇒ missingVault (nothing to migrate).
+    do {
+        let env = freshEnv()
+        guard case .success(let empty) = env.registry.create(label: "Empty") else {
+            fatalError("registry.create failed in export test setup")
+        }
+        let model = AppModel(env: env)
+        var missing = false
+        if case .failure(.missingVault) = model.exportVault(empty, to: env.vaultsRoot.appendingPathComponent("e.vault")) {
+            missing = true
+        }
+        amk("export-missing-vault", missing,
+            "exporting a vault with no vault.dat ⇒ .missingVault (nothing sealed yet)")
+    }
+
+    // A bundle with no vault.dat ⇒ badBundle (can't reconstitute a vault).
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        let p = env.vaultsRoot.appendingPathComponent("noVault.vault")
+        try? VaultBundle.pack([("schedule.json", Data("{}".utf8))]).write(to: p)
+        var bad = false
+        if case .failure(.badBundle) = model.importVault(from: p) { bad = true }
+        amk("import-rejects-missing-vaultdat", bad && env.registry.list().isEmpty,
+            "a bundle without vault.dat ⇒ .badBundle and no vault is created")
+    }
+
+    // A bundle carrying a non-whitelisted entry ⇒ badBundle (only the four known
+    // filenames are ever written into a vault directory).
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        let p = env.vaultsRoot.appendingPathComponent("weird.vault")
+        try? VaultBundle.pack([("vault.dat", Data("x".utf8)), ("evil.txt", Data("y".utf8))]).write(to: p)
+        var bad = false
+        if case .failure(.badBundle) = model.importVault(from: p) { bad = true }
+        amk("import-rejects-unknown-entry", bad && env.registry.list().isEmpty,
+            "a bundle with an unexpected entry name ⇒ .badBundle and no vault is created")
+    }
 }

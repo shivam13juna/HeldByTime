@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct VaultListView: View {
     @EnvironmentObject private var model: AppModel
@@ -20,6 +21,11 @@ struct VaultListView: View {
     /// app couldn't move itself to the Trash (translocation / read-only location).
     @State private var showUninstall = false
     @State private var trashFallback = false
+    /// Export: the targeted vault drives the "not time-locked once shared" warning
+    /// sheet shown BEFORE the save panel; `portError` surfaces any export/import
+    /// failure as a dismissable alert.
+    @State private var exportTarget: VaultEntry?
+    @State private var portError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -34,7 +40,8 @@ struct VaultListView: View {
                                      nextOpening: model.advisoryOpenings[entry.id],
                                      onOpen: { model.open(entry) },
                                      onRename: { startRename(entry) },
-                                     onDelete: { deleteTarget = entry })
+                                     onDelete: { deleteTarget = entry },
+                                     onExport: { exportTarget = entry })
                         }
                     }
                 }
@@ -73,6 +80,16 @@ struct VaultListView: View {
                  + "you chose to delete is gone). To finish, drag EncryptedVault to "
                  + "the Trash.")
         }
+        .sheet(item: $exportTarget) { entry in
+            ExportWarningSheet(vaultLabel: entry.meta.label,
+                               onExport: { exportTarget = nil; runExportPanel(entry) },
+                               onCancel: { exportTarget = nil })
+        }
+        .alert("Couldn’t complete", isPresented: portErrorPresented) {
+            Button("OK", role: .cancel) { portError = nil }
+        } message: {
+            Text(portError ?? "")
+        }
     }
 
     private var header: some View {
@@ -105,6 +122,14 @@ struct VaultListView: View {
                         get: { model.uiPrefs.appearance },
                         set: { model.applyAppearance($0) })) {
                         ForEach(Appearance.allCases) { Text($0.label).tag($0) }
+                    }
+
+                    Divider()
+
+                    // Import is app-level (no vault selected yet), so it lives in the
+                    // app overflow; Export is per-vault and lives on each row.
+                    Button { runImportPanel() } label: {
+                        Label("Import vault…", systemImage: "square.and.arrow.down")
                     }
 
                     Divider()
@@ -153,6 +178,61 @@ struct VaultListView: View {
                 set: { if !$0 { renameTarget = nil } })
     }
 
+    /// Bool binding for the export/import error alert (cleared on dismiss).
+    private var portErrorPresented: Binding<Bool> {
+        Binding(get: { portError != nil },
+                set: { if !$0 { portError = nil } })
+    }
+
+    /// The `.vault` content type used by both panels (custom extension; falls back
+    /// to plain data on the off chance the system can't register it).
+    private static let vaultType = UTType(filenameExtension: "vault") ?? .data
+
+    /// After the warning sheet is accepted, ask where to save and write the bundle.
+    private func runExportPanel(_ entry: VaultEntry) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [Self.vaultType]
+        panel.nameFieldStringValue = sanitizedFileName(entry.meta.label) + ".vault"
+        panel.canCreateDirectories = true
+        panel.message = "Choose where to save the exported vault. Keep it somewhere safe "
+            + "and delete it once you've migrated."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if case .failure(let e) = model.exportVault(entry, to: url) {
+            portError = "Export failed: \(describe(e))"
+        }
+    }
+
+    /// Pick a `.vault` file and import it as a new vault (the model refreshes the
+    /// list on success).
+    private func runImportPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [Self.vaultType]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Choose a vault file exported from EncryptedVault."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if case .failure(let e) = model.importVault(from: url) {
+            portError = "Import failed: \(describe(e))"
+        }
+    }
+
+    /// A filesystem-safe default file name from a vault label (no path separators).
+    private func sanitizedFileName(_ label: String) -> String {
+        let cleaned = label.components(separatedBy: CharacterSet(charactersIn: "/\\:\0"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "vault" : cleaned
+    }
+
+    /// Non-secret, user-facing text for a port failure.
+    private func describe(_ e: AppModel.PortError) -> String {
+        switch e {
+        case .missingVault:       return "this vault has nothing sealed to export yet."
+        case .io(let detail):     return detail
+        case .badBundle(let why): return "the file is not a valid vault export (\(why))."
+        }
+    }
+
     /// Remove the background helper (+ optionally wipe data) via AppModel, then move
     /// the .app itself to the Trash and quit — the auto-trash uninstall.
     private func performUninstall(deleteVaults: Bool) {
@@ -191,6 +271,7 @@ struct VaultRow: View {
     let onOpen: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
+    let onExport: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -226,6 +307,22 @@ struct VaultRow: View {
             .controlSize(.large)
             .foregroundStyle(.secondary)
             .help("Rename this vault")
+
+            // Per-vault overflow: the rarer actions (export, for machine migration)
+            // live behind a quiet menu so the row stays focused on open/rename/delete.
+            Menu {
+                Button(action: onExport) {
+                    Label("Export…", systemImage: "square.and.arrow.up")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .controlSize(.large)
+            .foregroundStyle(.secondary)
+            .help("More actions")
 
             Button(action: onOpen) {
                 // Closed padlock: this row only ever shows a vault in its locked
@@ -392,5 +489,50 @@ struct UninstallSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+}
+
+/// The warning shown BEFORE a vault is exported. An exported bundle is a copy that
+/// escapes the app's forward-reseal / window-end machinery: it stays time-locked to
+/// its current round, but once that round publishes it can be opened with only the
+/// password, forever, wherever the file sits. For a commitment device that is the
+/// single biggest hole, so the user confirms with eyes open and is told to store it
+/// safely and delete it after migrating.
+struct ExportWarningSheet: View {
+    let vaultLabel: String
+    let onExport: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Export “\(vaultLabel)”?", systemImage: "square.and.arrow.up")
+                .font(.title2).bold()
+
+            Text("The exported file is a **copy** for moving this vault to another "
+                 + "Mac. It stays time-locked to its current window and protected by "
+                 + "your password — but it will **not** re-lock itself the way the app "
+                 + "does. Once its window passes, anyone who has the file **and** the "
+                 + "password can open it.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Store it somewhere safe, and delete it once you've finished "
+                 + "migrating.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { onCancel() }
+                    .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
+                Button("Export…") { onExport() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
     }
 }

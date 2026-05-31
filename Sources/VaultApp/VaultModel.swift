@@ -28,7 +28,10 @@ final class VaultModel: ObservableObject, Identifiable {
     let id: String
     /// The user-chosen, NON-secret display label.
     @Published var label: String
-    @Published var phase: VaultPhase = .loading
+    /// The per-vault screen state. Its `didSet` is the single place the
+    /// while-unlocked window-end monitor is armed/disarmed (see that section): the
+    /// monitor runs only in `.unlocked` and stops on every transition out of it.
+    @Published var phase: VaultPhase = .loading { didSet { syncWindowEndMonitor() } }
     /// The decrypted content while unlocked; bound by the editor. Cleared on lock.
     @Published var content = VaultContent()
     /// Transient message for the unlock prompt (e.g. wrong password).
@@ -44,6 +47,18 @@ final class VaultModel: ObservableObject, Identifiable {
     @Published var isSealing = false
     /// Re-entrancy guard for `reload()` (the `.loading` phase drives its UI).
     private var loadInFlight = false
+
+    /// The while-unlocked window-end heartbeat (armed only in `.unlocked`) and its
+    /// in-flight guard so a slow poll cannot stack. Foundation `Timer`/`DispatchQueue`
+    /// only — this file is compiled into the offline test binary and must stay
+    /// AppKit-free (run_tests `scope/app-headless`), so wake/activation re-checks are
+    /// pushed in from the AppKit layer via `recheckWindowEnd()`.
+    private var windowEndTimer: Timer?
+    private var windowEndPollInFlight = false
+    /// How often the open session re-checks the verified round against its committed
+    /// window end. A minute is responsive enough to close an out-of-window session
+    /// while costing one cheap `current-round` call per minute.
+    static let windowEndPollInterval: TimeInterval = 60
 
     let config: AppConfiguration
 
@@ -262,6 +277,92 @@ final class VaultModel: ObservableObject, Identifiable {
     func sealForQuit() -> Bool {
         if case .unlocked = phase { _ = lock(trigger: .gracefulQuit) }
         return true
+    }
+
+    // MARK: - Window-end monitor (forced re-lock while unlocked)
+
+    deinit { windowEndTimer?.invalidate() }
+
+    /// Arm the heartbeat exactly while unlocked; stop it on any other phase. Driven
+    /// from `phase.didSet`, so it tracks every transition (unlock, lock, reload,
+    /// window-end re-lock) without each call site having to remember.
+    private func syncWindowEndMonitor() {
+        if case .unlocked = phase {
+            windowEndTimer?.invalidate()
+            // `.common` mode so the timer keeps firing during menu tracking / scrolling.
+            let timer = Timer(timeInterval: Self.windowEndPollInterval, repeats: true) { [weak self] _ in
+                self?.pollWindowEnd()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            windowEndTimer = timer
+        } else {
+            windowEndTimer?.invalidate()
+            windowEndTimer = nil
+        }
+    }
+
+    /// One heartbeat: fetch the verified round OFF the main thread, then route the
+    /// result back on main. Also the entry point the AppKit layer calls on
+    /// app-activation / wake-from-sleep (a laptop asleep past the window would never
+    /// have ticked). Offline / failure is a no-op that retries next tick — we fire on
+    /// a confirmed round past the end, never on the mere absence of one.
+    func recheckWindowEnd() { pollWindowEnd() }
+
+    private func pollWindowEnd() {
+        guard case let .unlocked(session) = phase, !windowEndPollInFlight else { return }
+        windowEndPollInFlight = true
+        DispatchQueue.global(qos: .utility).async {
+            let result = session.store.client.currentRound()
+            DispatchQueue.main.async { self.applyWindowEndPoll(result, session: session) }
+        }
+    }
+
+    /// Main-thread half of a heartbeat, split out so it is unit-testable without a
+    /// run loop or the network. A verified round strictly past the COMMITTED end ⇒
+    /// re-lock now. Anything else — still in window, offline, or a malformed reply —
+    /// is a no-op that keeps the session open. The `openWindow` match guards the rare
+    /// race where the user re-locked and re-opened a new window under us between the
+    /// poll dispatch and its return.
+    func applyWindowEndPoll(_ result: Result<CurrentRoundInfo, HelperError>, session: VaultSession) {
+        windowEndPollInFlight = false
+        guard case let .unlocked(current) = phase, current.openWindow == session.openWindow else { return }
+        guard case let .success(info) = result, session.hasWindowEnded(verifiedRound: info.round) else { return }
+        relockForWindowEnd(session: session)
+    }
+
+    /// Re-lock a session whose committed window has verifiably ended. We have POSITIVE
+    /// confirmation (a round past `endRound`), so the plaintext goes regardless of
+    /// whether the forward re-seal can be written this instant:
+    ///   • success ⇒ re-sealed forward, locked at the next window;
+    ///   • failure ⇒ clear the plaintext anyway and drop to a locked screen — the
+    ///     on-disk blob is closed by the agent / next-launch defensive re-seal.
+    /// Honouring the window beats saving an edit made in the rare offline instant at
+    /// the boundary; the poll that detected the end had just succeeded online, so this
+    /// failure path is a corner of a corner.
+    @discardableResult
+    func relockForWindowEnd(session: VaultSession) -> Bool {
+        guard case .unlocked = phase else { return false }
+        let resealed: Result<Manifest.Window, StoreError>
+        if let notes = try? content.encode() {
+            resealed = session.reseal(notes: notes, trigger: .windowEndReached)
+        } else {
+            // Over-cap notes can't be re-sealed — still hide the now-out-of-window
+            // plaintext and drop to a locked screen (fail-closed, never left open).
+            resealed = .failure(.format(.sizeLimit("notes over cap at window end")))
+        }
+        switch resealed {
+        case .success(let window):
+            diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
+            content = VaultContent()
+            phase = .locked(LockScreen.describe(.lockedUntil(displayStartRound: window.startRound),
+                                                calendar: schedulePrefs.calendar))
+            return true
+        case .failure:
+            diagnosticsLog.record(.resealFailed, source: .app)
+            content = VaultContent()    // confirmed out-of-window ⇒ hide plaintext regardless
+            phase = .locked(LockScreen.describe(.offline, calendar: schedulePrefs.calendar))
+            return false
+        }
     }
 
     // MARK: - settings

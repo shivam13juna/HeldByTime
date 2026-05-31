@@ -289,4 +289,84 @@ func runVaultModelSuite() {
             prompt && vm.diagnosticsLog.tail().contains { $0.contains("checked vault") },
             "reload() over a seeded open vault ⇒ .unlockPrompt and a logged check")
     }
+
+    // ===== window-end monitor (forced re-lock while unlocked) =====
+    // applyWindowEndPoll is the sync, run-loop-free half of the heartbeat. The DECISION
+    // it makes — re-lock only on a verified round strictly past the committed end — is
+    // what these pin; the timer/network half is exercised live (E2E).
+
+    func roundInfo(_ r: UInt64) -> CurrentRoundInfo { CurrentRoundInfo(round: r, expectedNow: r, unixTime: 0) }
+
+    // A verified round PAST the committed end ⇒ re-lock forward + drop the plaintext.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        vm.diagnosticsLog.clear()
+        let closed = vmWin(R - 100, R - 50)        // a window that has already ended at R
+        let session = VaultSession(store: fakeStore(entry.dir, FakeSeal(R: R)),
+                                   password: password, openWindow: closed)
+        vm.phase = .unlocked(session)
+        vm.content = VaultContent(notes: "left open past the window")
+        vm.applyWindowEndPoll(.success(roundInfo(R)), session: session)   // R > endRound
+        var locked = false
+        if case .locked = vm.phase { locked = true }
+        vmk("windowend-relocks-on-confirmed-end",
+            locked && vm.content == VaultContent()
+              && (vm.diagnosticsLog.tail().last?.contains("re-sealed forward to round") == true),
+            "round past endRound ⇒ re-seal forward, plaintext cleared, locked")
+    }
+
+    // Still inside the window (round ≤ endRound) ⇒ no-op: stays open, content intact.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let open = vmWin(R - 100, R + 100)         // still open at R
+        let keep = VaultContent(notes: "still in window")
+        let session = VaultSession(store: fakeStore(entry.dir, FakeSeal(R: R)),
+                                   password: password, openWindow: open)
+        vm.phase = .unlocked(session)
+        vm.content = keep
+        vm.applyWindowEndPoll(.success(roundInfo(R)), session: session)   // R ≤ endRound
+        var stillUnlocked = false
+        if case .unlocked = vm.phase { stillUnlocked = true }
+        vmk("windowend-noop-in-window",
+            stillUnlocked && vm.content == keep,
+            "a round still within the window ⇒ no re-lock, plaintext untouched")
+    }
+
+    // An offline poll ⇒ no-op: we never re-lock on the ABSENCE of a confirmed round.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let closed = vmWin(R - 100, R - 50)        // even though the window HAS ended…
+        let keep = VaultContent(notes: "network blip")
+        let session = VaultSession(store: fakeStore(entry.dir, FakeSeal(R: R)),
+                                   password: password, openWindow: closed)
+        vm.phase = .unlocked(session)
+        vm.content = keep
+        vm.applyWindowEndPoll(.failure(.timeout), session: session)        // …a failed poll does nothing
+        var stillUnlocked = false
+        if case .unlocked = vm.phase { stillUnlocked = true }
+        vmk("windowend-noop-offline-poll",
+            stillUnlocked && vm.content == keep,
+            "a failed/offline poll ⇒ no re-lock (fire on confirmation, not absence)")
+    }
+
+    // Confirmed end but the forward re-seal itself can't be written (offline store):
+    // the plaintext STILL goes (commitment wins), dropping to a locked screen.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        vm.diagnosticsLog.clear()
+        let closed = vmWin(R - 100, R - 50)
+        let fake = FakeSeal(R: R); fake.offline = true     // reseal's own round fetch fails
+        let session = VaultSession(store: fakeStore(entry.dir, fake),
+                                   password: password, openWindow: closed)
+        vm.phase = .unlocked(session)
+        vm.content = VaultContent(notes: "must not stay visible")
+        vm.applyWindowEndPoll(.success(roundInfo(R)), session: session)   // poll confirmed end
+        var locked = false
+        if case .locked = vm.phase { locked = true }
+        vmk("windowend-hides-plaintext-even-if-reseal-fails",
+            locked && vm.content == VaultContent()
+              && (vm.diagnosticsLog.tail().last?.contains("re-seal failed") == true)
+              && fake.sealCalls == 0,
+            "confirmed end + reseal offline ⇒ plaintext hidden, locked, nothing sealed")
+    }
 }

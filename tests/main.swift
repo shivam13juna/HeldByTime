@@ -5,6 +5,7 @@ import Foundation
 
 setvbuf(stdout, nil, _IONBF, 0)
 runFormatSuite()
+runBundleSuite()
 runArgon2Suite()
 runHelperSuite()
 runScheduleSuite()

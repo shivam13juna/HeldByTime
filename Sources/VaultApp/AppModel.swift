@@ -234,4 +234,115 @@ final class AppModel: ObservableObject {
         if case .open(let vm) = screen { return vm.sealForQuit() }
         return true
     }
+
+    /// Re-check the open vault's window-end immediately. Pushed in from the AppKit
+    /// layer on app-activation / wake-from-sleep — events VaultModel can't observe
+    /// itself without importing AppKit (which would break the headless test binary).
+    /// A no-op when no vault is open or it isn't unlocked.
+    func recheckOpenVaultWindow() {
+        if case .open(let vm) = screen { vm.recheckWindowEnd() }
+    }
+
+    // MARK: - Export / Import (portable .vault bundle, for machine migration)
+
+    /// Closed outcome of an export/import. Carries only non-secret diagnostic text.
+    enum PortError: Error, Equatable {
+        case missingVault           // export: the vault has no vault.dat to pack
+        case io(String)             // a read / write / allocation failure
+        case badBundle(String)      // import: not a valid or not-whitelisted bundle
+    }
+
+    /// The vault-directory files a portable bundle carries. `diagnostics.log` is
+    /// deliberately left out — it is machine-local activity, and the destination
+    /// machine starts a fresh trail. `meta.json` rides along only so import can read
+    /// the original label; the new vault gets a fresh meta (see `importVault`).
+    private static let portableFiles = ["vault.dat", "vault.dat.bak", "schedule.json", "meta.json"]
+
+    /// Pack a vault's sealed files into one portable `.vault` file at `dest`. NEVER
+    /// decrypts: the bytes stay time-locked + password-locked exactly as on disk, so
+    /// the export is as protected as the live vault (until its round publishes — the
+    /// migration trade-off the UI warns about). Records a secret-free export event in
+    /// the vault's own diagnostics log.
+    func exportVault(_ entry: VaultEntry, to dest: URL) -> Result<Void, PortError> {
+        let dir = entry.dir
+        var packed: [(name: String, data: Data)] = []
+        for name in Self.portableFiles {
+            if let data = try? Data(contentsOf: dir.appendingPathComponent(name)) {
+                packed.append((name: name, data: data))
+            } else if name == VaultRegistry.vaultFileName {
+                return .failure(.missingVault)
+            }
+        }
+        do { try VaultBundle.pack(packed).write(to: dest, options: .atomic) }
+        catch { return .failure(.io("write bundle: \(error)")) }
+        DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
+            .record(.vaultExported, source: .app)
+        return .success(())
+    }
+
+    /// Reconstitute a vault from a portable `.vault` file as a NEW vault (fresh id).
+    /// Fully validated and whitelisted: only the four known filenames are accepted,
+    /// `vault.dat` is required, and the freshly-allocated directory is re-marked
+    /// excluded-from-backup (fail-closed — an import that can't be kept out of OS
+    /// backups is backed out entirely). Refreshes the list and returns the new entry.
+    @discardableResult
+    func importVault(from src: URL) -> Result<VaultEntry, PortError> {
+        guard let raw = try? Data(contentsOf: src) else {
+            return .failure(.io("cannot read \(src.lastPathComponent)"))
+        }
+        let unpacked: [(name: String, data: Data)]
+        do { unpacked = try VaultBundle.unpack(raw) }
+        catch { return .failure(.badBundle("\(error)")) }
+
+        let allowed = Set(Self.portableFiles)
+        var files: [String: Data] = [:]
+        for (name, data) in unpacked {
+            guard allowed.contains(name) else { return .failure(.badBundle("unexpected entry “\(name)”")) }
+            files[name] = data
+        }
+        guard let vaultDat = files[VaultRegistry.vaultFileName] else {
+            return .failure(.badBundle("no \(VaultRegistry.vaultFileName) in bundle"))
+        }
+
+        // Allocate a fresh vault dir (new UUID + a current-dated meta). The label is
+        // taken from the bundle's meta when present, suffixed so it never silently
+        // collides with an existing vault of the same name.
+        let label = Self.bundleLabel(files["meta.json"]).map { "\($0) (imported)" } ?? "Imported vault"
+        guard case .success(let entry) = registry.create(label: label) else {
+            return .failure(.io("could not allocate a vault directory"))
+        }
+
+        // Write the sealed files (NOT meta.json — registry.create already wrote a
+        // fresh one). 0600, atomic. Then re-apply backup-exclusion the bundle could
+        // not carry. Any failure backs the whole import out.
+        func write(_ name: String, _ data: Data) -> Bool {
+            let url = entry.dir.appendingPathComponent(name)
+            guard (try? data.write(to: url, options: .atomic)) != nil else { return false }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return true
+        }
+        var ok = write(VaultRegistry.vaultFileName, vaultDat)
+        if let bak = files["vault.dat.bak"] { ok = ok && write("vault.dat.bak", bak) }
+        if let sched = files["schedule.json"] { ok = ok && write("schedule.json", sched) }
+        if ok { do { try VaultStore.excludeFromBackup(entry.dir) } catch { ok = false } }
+
+        guard ok else {
+            _ = registry.delete(id: entry.id)
+            return .failure(.io("could not write the imported vault"))
+        }
+        DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
+            .record(.vaultImported, source: .app)
+        refreshEntries()
+        return .success(entry)
+    }
+
+    /// The non-secret display label inside a bundle's meta.json, if it has a usable
+    /// one. A missing/garbled/blank label simply yields nil (import falls back to a
+    /// generic name) — a metadata problem never blocks the migration.
+    private static func bundleLabel(_ metaData: Data?) -> String? {
+        guard let metaData,
+              let meta = try? JSONDecoder().decode(VaultMeta.self, from: metaData) else { return nil }
+        let trimmed = meta.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
