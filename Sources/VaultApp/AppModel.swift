@@ -54,14 +54,55 @@ final class AppModel: ObservableObject {
         registry.purgeLegacyTopLevelVault()
         appLog.record(.appLaunched, source: .app)
 
+        // (Re)install the periodic re-seal agent, now ALSO firing right after each
+        // window closes — calendar triggers built from every vault's current
+        // schedule, so an expired vault re-seals within a minute instead of waiting
+        // up to one StartInterval. Best-effort, off the main thread (it reads each
+        // schedule.json and shells out to launchctl); captures the value-type env,
+        // never self.
         let log = appLog
+        let env = self.env
         DispatchQueue.global(qos: .utility).async {
-            let ok = ResealAgentInstaller.installOrRefresh()
+            let ok = ResealAgentInstaller.installOrRefresh(
+                calendarTimes: Self.resealFireTimes(env: env))
             log.record(.agentRegistered(success: ok), source: .app)
         }
 
         refreshEntries()
         screen = .list
+    }
+
+    /// The re-seal agent's calendar fire-times: every vault's window-end (advanced a
+    /// minute by `LaunchAgentPlist.fireTimes`), unioned across all vaults, so launchd
+    /// wakes the agent right after each window closes. Reads each vault's
+    /// schedule.json, falling back to the DEFAULT schedule exactly as the agent does
+    /// (ResealAgent/main.swift), so the triggers match what the agent will actually
+    /// re-seal. Static + env-only (no self) so it runs cleanly on the install
+    /// background queue and is unit-testable offline. Recomputed every launch ⇒ the
+    /// on-disk triggers always reflect the schedules as of the last app launch.
+    static func resealFireTimes(env: AppEnvironment) -> [DailyFireTime] {
+        var windows: [DailyWindow] = []
+        for entry in env.registry.list() {
+            let url = env.configuration(for: entry).schedulePrefsURL
+            let prefs = (try? SchedulePrefs.load(from: url)) ?? .default
+            windows.append(contentsOf: prefs.schedule.windows)
+        }
+        return LaunchAgentPlist.fireTimes(forWindowEnds: windows)
+    }
+
+    /// Reload ONLY the agent's window-end triggers from the CURRENT on-disk
+    /// schedules — after a schedule edit, or a vault create / delete / import — so
+    /// they reflect reality immediately instead of waiting for the next launch.
+    /// Silent: a pure trigger reload (`kickstart: false`) makes no immediate agent
+    /// run and no extra log line, matching "a schedule change only affects the next
+    /// re-seal". Off the main thread (reads schedule.json + shells out to launchctl);
+    /// `env` is a value type, so this captures no self.
+    func refreshResealSchedule() {
+        let env = self.env
+        DispatchQueue.global(qos: .utility).async {
+            _ = ResealAgentInstaller.installOrRefresh(
+                calendarTimes: Self.resealFireTimes(env: env), kickstart: false)
+        }
     }
 
     /// Re-read the vault directories from disk and recompute the advisory next
@@ -84,7 +125,11 @@ final class AppModel: ObservableObject {
 
     /// Open an existing vault: build its model and run the load state-machine.
     func open(_ entry: VaultEntry) {
-        let vm = VaultModel(entry: entry, env: env)
+        // The vault signals schedule edits back up so we can refresh the agent's
+        // window-end triggers immediately (a schedule change must not wait for the
+        // next launch to take effect).
+        let vm = VaultModel(entry: entry, env: env,
+                            onScheduleChanged: { [weak self] in self?.refreshResealSchedule() })
         screen = .open(vm)
         vm.reload()
     }
@@ -127,6 +172,7 @@ final class AppModel: ObservableObject {
 
     private func finishCreate(_ entry: VaultEntry) {
         refreshEntries()
+        refreshResealSchedule()        // the new vault's window-end joins the triggers
         if let fresh = entries.first(where: { $0.id == entry.id }) {
             open(fresh)            // jump straight into the new vault
         } else {
@@ -152,6 +198,7 @@ final class AppModel: ObservableObject {
         _ = registry.delete(id: entry.id)
         if case .open(let vm) = screen, vm.id == entry.id { screen = .list }
         refreshEntries()
+        refreshResealSchedule()        // drop the removed vault's window-end trigger
     }
 
     // MARK: - Rename
@@ -381,7 +428,7 @@ final class AppModel: ObservableObject {
         do { unpacked = try VaultBundle.unpack(raw) }
         catch { return .failure(.badBundle("\(error)")) }
         let result = installVault(unpacked)
-        if case .success = result { refreshEntries() }
+        if case .success = result { refreshEntries(); refreshResealSchedule() }
         return result
     }
 
@@ -432,6 +479,7 @@ final class AppModel: ObservableObject {
             }
         }
         refreshEntries()
+        refreshResealSchedule()
         return .success(created)
     }
 

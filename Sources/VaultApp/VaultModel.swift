@@ -68,16 +68,24 @@ final class VaultModel: ObservableObject, Identifiable {
     /// behaviour is unchanged.
     private let storeFactory: ((AppConfiguration, Schedule) -> VaultStore)?
 
+    /// Called after a schedule edit is persisted. The app wires this to refresh the
+    /// background re-seal agent's window-end triggers immediately (so an edit takes
+    /// effect now, not at the next launch). Defaults to a no-op for headless tests
+    /// and any caller that does not manage the agent.
+    private let onScheduleChanged: () -> Void
+
     /// This vault's secret-free diagnostics trail (shared with the background
     /// agent). Exposed so DiagnosticsView can read it; logging stays in this model.
     var diagnosticsLog: DiagnosticLog { DiagnosticLog(url: config.diagnosticsLogURL) }
 
     init(entry: VaultEntry, env: AppEnvironment,
-         makeStore: ((AppConfiguration, Schedule) -> VaultStore)? = nil) {
+         makeStore: ((AppConfiguration, Schedule) -> VaultStore)? = nil,
+         onScheduleChanged: @escaping () -> Void = {}) {
         self.id = entry.id
         self.label = entry.meta.label
         self.config = env.configuration(for: entry)
         self.storeFactory = makeStore
+        self.onScheduleChanged = onScheduleChanged
         self.schedulePrefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
     }
 
@@ -372,5 +380,9 @@ final class VaultModel: ObservableObject, Identifiable {
     func applySchedule(_ prefs: SchedulePrefs) {
         schedulePrefs = prefs
         try? prefs.save(to: config.schedulePrefsURL)
+        // Refresh the agent's window-end triggers now (it never grants access — the
+        // committed manifest still gates load(); this only changes when the agent
+        // next wakes to re-seal).
+        onScheduleChanged()
     }
 }

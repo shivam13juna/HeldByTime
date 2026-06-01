@@ -28,8 +28,11 @@ enum ResealAgentInstaller {
     }
 
     /// (Re)write the plist for the current bundle path and (re)bootstrap it.
-    /// Idempotent: bootout-then-bootstrap refreshes a stale program path, and a
-    /// kickstart makes it run once right now (don't wait for the first interval).
+    /// Idempotent: bootout-then-bootstrap refreshes a stale program path (and the
+    /// window-end calendar triggers), and — when `kickstart` is true (the default) —
+    /// a kickstart makes it run once right now. Pass `kickstart: false` for a pure
+    /// trigger RELOAD (e.g. after a schedule edit) that must reload the new triggers
+    /// without running the agent now.
     /// Returns true if the plist was written and (re)bootstrap was attempted;
     /// false if there is nothing to install (no bundled agent / can't write).
     ///
@@ -44,6 +47,8 @@ enum ResealAgentInstaller {
         agentURL: URL = agentExecutableURL,
         plistURL: URL = Self.plistURL,
         uid: uid_t = getuid(),
+        calendarTimes: [DailyFireTime] = [],
+        kickstart: Bool = true,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         writePlist: (Data, URL) throws -> Void = { data, url in
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -57,7 +62,7 @@ enum ResealAgentInstaller {
         // missing path on a timer.
         guard fileExists(agentURL.path) else { return false }
 
-        let plist = LaunchAgentPlist.reseal(programPath: agentURL.path)
+        let plist = LaunchAgentPlist.reseal(programPath: agentURL.path, calendarTimes: calendarTimes)
         guard !plist.isEmpty else { return false }
 
         do {
@@ -67,11 +72,11 @@ enum ResealAgentInstaller {
         }
 
         let domain = "gui/\(uid)"
-        // bootout an old definition (ignore "not loaded"), then bootstrap fresh,
-        // then kickstart so it runs immediately.
+        // bootout an old definition (ignore "not loaded"), then bootstrap fresh, then
+        // — unless this is a pure trigger reload — kickstart so it runs immediately.
         run(["bootout", domain, plistURL.path])
         run(["bootstrap", domain, plistURL.path])
-        run(["kickstart", "\(domain)/\(LaunchAgentPlist.resealLabel)"])
+        if kickstart { run(["kickstart", "\(domain)/\(LaunchAgentPlist.resealLabel)"]) }
         return true
     }
 

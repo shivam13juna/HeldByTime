@@ -248,6 +248,20 @@ func runVaultModelSuite() {
             "applySchedule persists the windows but leaves the phase (and the lock) untouched")
     }
 
+    // applySchedule fires the onScheduleChanged hook (which the app wires to refresh
+    // the agent's window-end triggers) AND still persists — so editing a schedule
+    // updates the triggers immediately, not at the next launch.
+    do {
+        let entry = freshEntry()
+        var refreshed = 0
+        let vm = VaultModel(entry: entry, env: env, onScheduleChanged: { refreshed += 1 })
+        vm.applySchedule(SchedulePrefs(windows: [WindowPrefs(startHour: 6, startMinute: 0, endHour: 7, endMinute: 0)]))
+        let persisted = try? SchedulePrefs.load(from: entry.dir.appendingPathComponent("schedule.json"))
+        vmk("schedule-change-refreshes-triggers",
+            refreshed == 1 && persisted?.windows.first?.endHour == 7,
+            "applySchedule fires onScheduleChanged once and still persists the edited windows")
+    }
+
     // unlock() is a no-op while one is already in flight (re-entrancy guard): it must
     // not clear the prior error or re-enter. Observable because unlock() only clears
     // unlockError AFTER passing the guard.

@@ -108,6 +108,23 @@ func runAppModelSuite() {
             "two sealed vaults ⇒ both listed oldest-first, each with an advisory opening")
     }
 
+    // resealFireTimes unions every vault's window-END (+1 min) into the agent's
+    // calendar triggers, reading each vault's schedule.json from disk. Two vaults
+    // ending at 05:00 and 17:30 ⇒ sorted fires at 05:01 and 17:31.
+    do {
+        let env = freshEnv()
+        let a = makeVault(env, "A", at: 1000)
+        let b = makeVault(env, "B", at: 2000)
+        try? Data(#"{"windows":[{"startHour":4,"startMinute":0,"endHour":5,"endMinute":0}]}"#.utf8)
+            .write(to: a.dir.appendingPathComponent("schedule.json"))
+        try? Data(#"{"windows":[{"startHour":16,"startMinute":0,"endHour":17,"endMinute":30}]}"#.utf8)
+            .write(to: b.dir.appendingPathComponent("schedule.json"))
+        let times = AppModel.resealFireTimes(env: env)
+        amk("reseal-firetimes-union",
+            times == [DailyFireTime(hour: 5, minute: 1), DailyFireTime(hour: 17, minute: 31)],
+            "every vault's window-end (+1min) is unioned + sorted for the agent's calendar triggers")
+    }
+
     // ===== Navigation =====
 
     // open(entry) builds that vault's model, routes to it, and triggers the load.

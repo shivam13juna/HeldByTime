@@ -131,6 +131,43 @@ func runAgentSuite() {
               "success path returns true once the plist is written + bootstrap attempted")
     }
 
+    // --- agent/calendar-times-reach-plist ---
+    // calendarTimes passed to installOrRefresh must land in the written plist as
+    // StartCalendarInterval — the window-end boundary wiring. The single source of
+    // truth is LaunchAgentPlist.reseal, so we compare against its bytes for the same
+    // path + times (proving the installer threads them through unchanged).
+    do {
+        let times = [DailyFireTime(hour: 5, minute: 1), DailyFireTime(hour: 17, minute: 31)]
+        var written: (data: Data, url: URL)?
+        let ok = ResealAgentInstaller.installOrRefresh(
+            agentURL: agent, plistURL: plistURL, uid: uid,
+            calendarTimes: times,
+            fileExists: exists,
+            writePlist: { written = ($0, $1) },
+            run: { _ in })
+        check("agent/calendar-times-reach-plist",
+              ok && written?.data == LaunchAgentPlist.reseal(programPath: agent.path, calendarTimes: times),
+              "installOrRefresh threads calendarTimes into the written plist (window-end boundaries)")
+    }
+
+    // --- agent/install-no-kickstart ---
+    // kickstart:false is a pure trigger RELOAD (used after a schedule edit / vault
+    // add / remove): bootout → bootstrap to load the new calendar entries, but NO
+    // kickstart — the agent must not run now (a schedule change only affects the
+    // NEXT re-seal).
+    do {
+        var ran: [[String]] = []
+        let ok = ResealAgentInstaller.installOrRefresh(
+            agentURL: agent, plistURL: plistURL, uid: uid,
+            kickstart: false,
+            fileExists: exists,
+            writePlist: { _, _ in },
+            run: { ran.append($0) })
+        check("agent/install-no-kickstart",
+              ok && ran == [["bootout", domain, plistURL.path], ["bootstrap", domain, plistURL.path]],
+              "kickstart:false ⇒ bootout → bootstrap only (reload triggers, no immediate run)")
+    }
+
     // --- agent/uninstall-boots-out-then-removes ---  (the uninstall behavioural contract)
     // Uninstall must unload the job by LABEL (gui/<uid>/<label>) and THEN delete the
     // plist — in that order — and report the agent gone.
