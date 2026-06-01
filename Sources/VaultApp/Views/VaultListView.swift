@@ -21,10 +21,13 @@ struct VaultListView: View {
     /// app couldn't move itself to the Trash (translocation / read-only location).
     @State private var showUninstall = false
     @State private var trashFallback = false
-    /// Export: the targeted vault drives the "not time-locked once shared" warning
-    /// sheet shown BEFORE the save panel; `portError` surfaces any export/import
-    /// failure as a dismissable alert.
-    @State private var exportTarget: VaultEntry?
+    /// Export: a multi-select mode (entered from the app overflow menu) lets the user
+    /// tick one or more vaults; `selected` holds their ids and `showExportWarning`
+    /// drives the "not time-locked once shared" sheet shown BEFORE the save panel.
+    /// `portError` surfaces any export/import failure as a dismissable alert.
+    @State private var isSelecting = false
+    @State private var selected: Set<String> = []
+    @State private var showExportWarning = false
     @State private var portError: String?
 
     var body: some View {
@@ -38,10 +41,12 @@ struct VaultListView: View {
                         ForEach(model.entries, id: \.id) { entry in
                             VaultRow(entry: entry,
                                      nextOpening: model.advisoryOpenings[entry.id],
+                                     isSelecting: isSelecting,
+                                     isSelected: selected.contains(entry.id),
+                                     onToggleSelect: { toggleSelect(entry) },
                                      onOpen: { model.open(entry) },
                                      onRename: { startRename(entry) },
-                                     onDelete: { deleteTarget = entry },
-                                     onExport: { exportTarget = entry })
+                                     onDelete: { deleteTarget = entry })
                         }
                     }
                 }
@@ -80,10 +85,10 @@ struct VaultListView: View {
                  + "you chose to delete is gone). To finish, drag EncryptedVault to "
                  + "the Trash.")
         }
-        .sheet(item: $exportTarget) { entry in
-            ExportWarningSheet(vaultLabel: entry.meta.label,
-                               onExport: { exportTarget = nil; runExportPanel(entry) },
-                               onCancel: { exportTarget = nil })
+        .sheet(isPresented: $showExportWarning) {
+            ExportWarningSheet(count: selected.count,
+                               onExport: { showExportWarning = false; runExportPanel() },
+                               onCancel: { showExportWarning = false })
         }
         .alert("Couldn’t complete", isPresented: portErrorPresented) {
             Button("OK", role: .cancel) { portError = nil }
@@ -95,56 +100,85 @@ struct VaultListView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Your vaults").font(.largeTitle).bold()
-                Text("Each vault time-locks on its own daily schedule.")
+                Text(isSelecting ? "Export vaults" : "Your vaults").font(.largeTitle).bold()
+                Text(isSelecting
+                     ? "Pick the vaults to save into one exported file."
+                     : "Each vault time-locks on its own daily schedule.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            HStack(spacing: 8) {
-                if !model.entries.isEmpty {
-                    Button { showMergedLog = true } label: {
-                        Label("Activity log", systemImage: "doc.text.magnifyingglass")
-                    }
-                    .controlSize(.large)
+            if isSelecting { selectionControls } else { normalControls }
+        }
+    }
+
+    /// The default header actions: activity log, new vault, and the app overflow menu.
+    private var normalControls: some View {
+        HStack(spacing: 8) {
+            if !model.entries.isEmpty {
+                Button { showMergedLog = true } label: {
+                    Label("Activity log", systemImage: "doc.text.magnifyingglass")
                 }
-                Button { model.beginCreate() } label: {
-                    Label("New vault", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-
-                // App-level overflow at the far right of the header, after the
-                // per-list actions — a quiet menu, never a primary control. Appearance
-                // is a GLOBAL app preference (ui.json), so it lives here, reachable
-                // without unlocking any vault, rather than buried in a per-vault screen.
-                Menu {
-                    Picker("Appearance", selection: Binding(
-                        get: { model.uiPrefs.appearance },
-                        set: { model.applyAppearance($0) })) {
-                        ForEach(Appearance.allCases) { Text($0.label).tag($0) }
-                    }
-
-                    Divider()
-
-                    // Import is app-level (no vault selected yet), so it lives in the
-                    // app overflow; Export is per-vault and lives on each row.
-                    Button { runImportPanel() } label: {
-                        Label("Import vault…", systemImage: "square.and.arrow.down")
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) { showUninstall = true } label: {
-                        Label("Uninstall application…", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle").font(.title3)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More actions")
             }
+            Button { model.beginCreate() } label: {
+                Label("New vault", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+
+            // App-level overflow at the far right of the header — a quiet menu, never a
+            // primary control. Appearance is a GLOBAL app preference (ui.json), and
+            // export/import act across vaults, so both live here rather than on a row.
+            Menu {
+                Picker("Appearance", selection: Binding(
+                    get: { model.uiPrefs.appearance },
+                    set: { model.applyAppearance($0) })) {
+                    ForEach(Appearance.allCases) { Text($0.label).tag($0) }
+                }
+
+                Divider()
+
+                // Export enters a multi-select mode (one file can hold several vaults);
+                // import reads one such file back. Both are app-level, not per-vault.
+                Button { enterSelection() } label: {
+                    Label("Export vaults…", systemImage: "square.and.arrow.up")
+                }
+                .disabled(model.entries.isEmpty)
+                Button { runImportPanel() } label: {
+                    Label("Import vaults…", systemImage: "square.and.arrow.down")
+                }
+
+                Divider()
+
+                Button(role: .destructive) { showUninstall = true } label: {
+                    Label("Uninstall application…", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title3)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+        }
+    }
+
+    /// The header actions while picking vaults to export: select-all, cancel, and the
+    /// primary Export button (disabled until at least one vault is ticked).
+    private var selectionControls: some View {
+        HStack(spacing: 8) {
+            Button(allSelected ? "Deselect all" : "Select all") { toggleSelectAll() }
+                .controlSize(.large)
+                .disabled(model.entries.isEmpty)
+            Button("Cancel") { exitSelection() }
+                .controlSize(.large)
+                .keyboardShortcut(.cancelAction)
+            Button { showExportWarning = true } label: {
+                Label("Export \(selected.count)…", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(selected.isEmpty)
         }
     }
 
@@ -171,6 +205,19 @@ struct VaultListView: View {
         renameTarget = entry
     }
 
+    /// True when every vault is ticked (drives the Select-all / Deselect-all label).
+    private var allSelected: Bool {
+        !model.entries.isEmpty && selected.count == model.entries.count
+    }
+    private func toggleSelect(_ entry: VaultEntry) {
+        if selected.contains(entry.id) { selected.remove(entry.id) } else { selected.insert(entry.id) }
+    }
+    private func toggleSelectAll() {
+        if allSelected { selected.removeAll() } else { selected = Set(model.entries.map { $0.id }) }
+    }
+    private func enterSelection() { selected = []; isSelecting = true }
+    private func exitSelection() { isSelecting = false; selected = [] }
+
     /// `.alert(isPresented:)` needs a Bool binding; derive it from `renameTarget`
     /// (setting false clears the target).
     private var renameIsPresented: Binding<Bool> {
@@ -188,22 +235,38 @@ struct VaultListView: View {
     /// to plain data on the off chance the system can't register it).
     private static let vaultType = UTType(filenameExtension: "vault") ?? .data
 
-    /// After the warning sheet is accepted, ask where to save and write the bundle.
-    private func runExportPanel(_ entry: VaultEntry) {
+    /// After the warning sheet is accepted, ask where to save and write the selected
+    /// vaults into one archive. On success, leave selection mode.
+    private func runExportPanel() {
+        let entries = model.entries.filter { selected.contains($0.id) }
+        guard !entries.isEmpty else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [Self.vaultType]
-        panel.nameFieldStringValue = sanitizedFileName(entry.meta.label) + ".vault"
+        panel.nameFieldStringValue = defaultExportName(entries)
         panel.canCreateDirectories = true
-        panel.message = "Choose where to save the exported vault. Keep it somewhere safe "
-            + "and delete it once you've migrated."
+        panel.message = entries.count == 1
+            ? "Choose where to save the exported vault. Keep it somewhere safe and "
+              + "delete it once you've migrated."
+            : "Choose where to save the exported vaults. Keep the file somewhere safe "
+              + "and delete it once you've migrated."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if case .failure(let e) = model.exportVault(entry, to: url) {
+        if case .failure(let e) = model.exportVaults(entries, to: url) {
             portError = "Export failed: \(describe(e))"
+        } else {
+            exitSelection()
         }
     }
 
-    /// Pick a `.vault` file and import it as a new vault (the model refreshes the
-    /// list on success).
+    /// A default file name for the chosen vaults: the single vault's label, or a
+    /// count-stamped name for several.
+    private func defaultExportName(_ entries: [VaultEntry]) -> String {
+        entries.count == 1
+            ? sanitizedFileName(entries[0].meta.label) + ".vault"
+            : "EncryptedVault-\(entries.count)-vaults.vault"
+    }
+
+    /// Pick a `.vault` file and import every vault it contains (the model refreshes
+    /// the list on success).
     private func runImportPanel() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [Self.vaultType]
@@ -211,7 +274,7 @@ struct VaultListView: View {
         panel.canChooseDirectories = false
         panel.message = "Choose a vault file exported from EncryptedVault."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if case .failure(let e) = model.importVault(from: url) {
+        if case .failure(let e) = model.importArchive(from: url) {
             portError = "Import failed: \(describe(e))"
         }
     }
@@ -227,9 +290,11 @@ struct VaultListView: View {
     /// Non-secret, user-facing text for a port failure.
     private func describe(_ e: AppModel.PortError) -> String {
         switch e {
-        case .missingVault:       return "this vault has nothing sealed to export yet."
+        case .missingVault:       return "one of the chosen vaults has nothing sealed to export yet."
         case .io(let detail):     return detail
         case .badBundle(let why): return "the file is not a valid vault export (\(why))."
+        case .tooMany(let max):   return "you can export at most \(max) vaults in one file — "
+                                       + "select fewer, or export in batches."
         }
     }
 
@@ -268,16 +333,27 @@ struct VaultRow: View {
     /// Advisory next scheduled opening (wall clock). DISPLAY ONLY — never the real
     /// lock state; nil if the vault has no usable schedule.
     let nextOpening: Date?
+    /// Selection mode (export picker): show a checkbox in place of the lock glyph and
+    /// turn the whole row into a toggle; the per-vault action buttons are hidden.
+    let isSelecting: Bool
+    let isSelected: Bool
+    let onToggleSelect: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
-    let onExport: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "lock.fill")
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .frame(width: 24)
+            } else {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.meta.label)
                     .font(.headline)
@@ -285,66 +361,57 @@ struct VaultRow: View {
                 advisory
             }
 
-            // Delete sits here, in the quiet zone by the name — deliberately far
-            // from the Open button the user reaches for, since deletion is
-            // permanent and irreversible. It is a quiet icon, not a target.
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .foregroundStyle(.red)
+            if !isSelecting {
+                // Delete sits here, in the quiet zone by the name — deliberately far
+                // from the Open button the user reaches for, since deletion is
+                // permanent and irreversible. It is a quiet icon, not a target.
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.large)
+                .padding(.leading, 4)
+                .help("Permanently delete this vault")
             }
-            .buttonStyle(.borderless)
-            .controlSize(.large)
-            .padding(.leading, 4)
-            .help("Permanently delete this vault")
 
             Spacer()
 
-            // The two intentional actions, grouped on the right.
-            Button(action: onRename) {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.large)
-            .foregroundStyle(.secondary)
-            .help("Rename this vault")
-
-            // Per-vault overflow: the rarer actions (export, for machine migration)
-            // live behind a quiet menu so the row stays focused on open/rename/delete.
-            Menu {
-                Button(action: onExport) {
-                    Label("Export…", systemImage: "square.and.arrow.up")
+            if !isSelecting {
+                // The two intentional actions, grouped on the right. (Export is no
+                // longer here — it's an app-level multi-select in the overflow menu.)
+                Button(action: onRename) {
+                    Image(systemName: "pencil")
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .controlSize(.large)
-            .foregroundStyle(.secondary)
-            .help("More actions")
+                .buttonStyle(.borderless)
+                .controlSize(.large)
+                .foregroundStyle(.secondary)
+                .help("Rename this vault")
 
-            Button(action: onOpen) {
-                // Closed padlock: this row only ever shows a vault in its locked
-                // state (the list never unlocks); "Open" is the action, lock.fill
-                // the current state.
-                Label("Open", systemImage: "lock.fill")
+                Button(action: onOpen) {
+                    // Closed padlock: this row only ever shows a vault in its locked
+                    // state (the list never unlocks); "Open" is the action, lock.fill
+                    // the current state.
+                    Label("Open", systemImage: "lock.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.leading, 4)
+                .help("Open this vault")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.leading, 4)
-            .help("Open this vault")
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06))
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.06))
         )
+        .contentShape(Rectangle())
+        .onTapGesture { if isSelecting { onToggleSelect() } }
     }
 
     @ViewBuilder private var advisory: some View {
@@ -379,7 +446,7 @@ struct DeleteVaultSheet: View {
                 .font(.title2).bold()
                 .foregroundStyle(.red)
 
-            Text("This permanently deletes “\(entry.meta.label)” and everything sealed "
+            Text(markdown: "This permanently deletes “\(entry.meta.label)” and everything sealed "
                  + "inside it. It is **not** moved to the Trash and **cannot** be "
                  + "recovered — even if you know the password.")
                 .font(.callout)
@@ -445,7 +512,7 @@ struct UninstallSheet: View {
             Label("Uninstall this application?", systemImage: "trash")
                 .font(.title2).bold()
 
-            Text("This removes EncryptedVault's background re-seal helper and moves "
+            Text(markdown: "This removes EncryptedVault's background re-seal helper and moves "
                  + "the app to the Trash. **Your vaults are kept** — reinstalling "
                  + "EncryptedVault re-opens them on their schedule.")
                 .font(.callout)
@@ -458,7 +525,7 @@ struct UninstallSheet: View {
 
             if deleteVaults {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("This **permanently** deletes every vault and everything "
+                    Text(markdown: "This **permanently** deletes every vault and everything "
                          + "sealed inside — it is **not** moved to the Trash and "
                          + "**cannot** be recovered, even with the password.")
                         .font(.callout).foregroundStyle(.red)
@@ -492,29 +559,41 @@ struct UninstallSheet: View {
     }
 }
 
-/// The warning shown BEFORE a vault is exported. An exported bundle is a copy that
-/// escapes the app's forward-reseal / window-end machinery: it stays time-locked to
-/// its current round, but once that round publishes it can be opened with only the
-/// password, forever, wherever the file sits. For a commitment device that is the
-/// single biggest hole, so the user confirms with eyes open and is told to store it
-/// safely and delete it after migrating.
+/// The warning shown BEFORE one or more vaults are exported. An exported file is a
+/// copy that escapes the app's forward-reseal / window-end machinery: it stays
+/// time-locked to its current round, but once that round publishes it can be opened
+/// with only the password, forever, wherever the file sits. For a commitment device
+/// that is the single biggest hole, so the user confirms with eyes open and is told
+/// to store it safely and delete it after migrating.
 struct ExportWarningSheet: View {
-    let vaultLabel: String
+    /// How many vaults are being exported (drives the singular/plural copy).
+    let count: Int
     let onExport: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Export “\(vaultLabel)”?", systemImage: "square.and.arrow.up")
+            Label(count == 1 ? "Export this vault?" : "Export \(count) vaults?",
+                  systemImage: "square.and.arrow.up")
                 .font(.title2).bold()
 
-            Text("The exported file is a **copy** for moving this vault to another "
-                 + "Mac. It stays time-locked to its current window and protected by "
-                 + "your password — but it will **not** re-lock itself the way the app "
-                 + "does. Once its window passes, anyone who has the file **and** the "
-                 + "password can open it.")
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
+            if count == 1 {
+                Text(markdown: "The exported file is a **copy** for moving this vault to another "
+                     + "Mac. It stays time-locked to its current window and protected by "
+                     + "your password — but it will **not** re-lock itself the way the app "
+                     + "does. Once its window passes, anyone who has the file **and** the "
+                     + "password can open it.")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(markdown: "The exported file is a **copy** for moving these vaults to another "
+                     + "Mac. Each stays time-locked to its current window and protected by "
+                     + "your password — but they will **not** re-lock themselves the way the "
+                     + "app does. Once a vault's window passes, anyone who has the file "
+                     + "**and** the password can open that vault.")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Text("Store it somewhere safe, and delete it once you've finished "
                  + "migrating.")
@@ -527,12 +606,12 @@ struct ExportWarningSheet: View {
                 Button("Cancel") { onCancel() }
                     .controlSize(.large)
                     .keyboardShortcut(.cancelAction)
-                Button("Export…") { onExport() }
+                Button(count == 1 ? "Export…" : "Export \(count)…") { onExport() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 460)
     }
 }

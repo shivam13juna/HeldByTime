@@ -250,6 +250,7 @@ final class AppModel: ObservableObject {
         case missingVault           // export: the vault has no vault.dat to pack
         case io(String)             // a read / write / allocation failure
         case badBundle(String)      // import: not a valid or not-whitelisted bundle
+        case tooMany(Int)           // export: more vaults than one archive can hold
     }
 
     /// The vault-directory files a portable bundle carries. `diagnostics.log` is
@@ -258,12 +259,11 @@ final class AppModel: ObservableObject {
     /// the original label; the new vault gets a fresh meta (see `importVault`).
     private static let portableFiles = ["vault.dat", "vault.dat.bak", "schedule.json", "meta.json"]
 
-    /// Pack a vault's sealed files into one portable `.vault` file at `dest`. NEVER
-    /// decrypts: the bytes stay time-locked + password-locked exactly as on disk, so
-    /// the export is as protected as the live vault (until its round publishes — the
-    /// migration trade-off the UI warns about). Records a secret-free export event in
-    /// the vault's own diagnostics log.
-    func exportVault(_ entry: VaultEntry, to dest: URL) -> Result<Void, PortError> {
+    /// Pack one vault's sealed files into a single inner bundle blob (the exact bytes
+    /// `exportVault` writes for one vault, and one outer entry of a multi-vault
+    /// archive). NEVER decrypts — the bytes stay time-locked + password-locked exactly
+    /// as on disk. Fails closed if the vault has nothing sealed yet (no `vault.dat`).
+    private func packVaultFiles(_ entry: VaultEntry) -> Result<Data, PortError> {
         let dir = entry.dir
         var packed: [(name: String, data: Data)] = []
         for name in Self.portableFiles {
@@ -273,27 +273,62 @@ final class AppModel: ObservableObject {
                 return .failure(.missingVault)
             }
         }
-        do { try VaultBundle.pack(packed).write(to: dest, options: .atomic) }
+        return .success(VaultBundle.pack(packed))
+    }
+
+    /// Pack a single vault's sealed files into one portable `.vault` file at `dest`.
+    /// The export is as protected as the live vault (until its round publishes — the
+    /// migration trade-off the UI warns about). Records a secret-free export event in
+    /// the vault's own diagnostics log.
+    func exportVault(_ entry: VaultEntry, to dest: URL) -> Result<Void, PortError> {
+        let blob: Data
+        switch packVaultFiles(entry) {
+        case .failure(let e): return .failure(e)
+        case .success(let b): blob = b
+        }
+        do { try blob.write(to: dest, options: .atomic) }
         catch { return .failure(.io("write bundle: \(error)")) }
         DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
             .record(.vaultExported, source: .app)
         return .success(())
     }
 
-    /// Reconstitute a vault from a portable `.vault` file as a NEW vault (fresh id).
+    /// Pack one OR MORE vaults' sealed files into a single portable `.vault` archive
+    /// at `dest`. The archive is a bundle-of-bundles: each vault is packed into its
+    /// own inner bundle (identical to what `exportVault` writes), and those inner
+    /// blobs become the entries of an OUTER bundle named `vault-0…vault-N`. Same
+    /// audited container both layers — no new parsing path — and like the single-vault
+    /// export it NEVER decrypts. Fails closed before writing anything if any selected
+    /// vault has nothing sealed, or if there are more vaults than one archive can hold.
+    /// Records a secret-free export event in EACH vault's own diagnostics log.
+    func exportVaults(_ entries: [VaultEntry], to dest: URL) -> Result<Void, PortError> {
+        guard !entries.isEmpty else { return .failure(.missingVault) }
+        guard entries.count <= VaultBundle.maxEntries else {
+            return .failure(.tooMany(VaultBundle.maxEntries))
+        }
+        var outer: [(name: String, data: Data)] = []
+        for (i, entry) in entries.enumerated() {
+            switch packVaultFiles(entry) {
+            case .failure(let e): return .failure(e)         // fail-closed: nothing written
+            case .success(let blob): outer.append((name: "vault-\(i)", data: blob))
+            }
+        }
+        do { try VaultBundle.pack(outer).write(to: dest, options: .atomic) }
+        catch { return .failure(.io("write archive: \(error)")) }
+        for entry in entries {
+            DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
+                .record(.vaultExported, source: .app)
+        }
+        return .success(())
+    }
+
+    /// Reconstitute ONE vault from its unpacked entries as a NEW vault (fresh id).
     /// Fully validated and whitelisted: only the four known filenames are accepted,
     /// `vault.dat` is required, and the freshly-allocated directory is re-marked
     /// excluded-from-backup (fail-closed — an import that can't be kept out of OS
-    /// backups is backed out entirely). Refreshes the list and returns the new entry.
-    @discardableResult
-    func importVault(from src: URL) -> Result<VaultEntry, PortError> {
-        guard let raw = try? Data(contentsOf: src) else {
-            return .failure(.io("cannot read \(src.lastPathComponent)"))
-        }
-        let unpacked: [(name: String, data: Data)]
-        do { unpacked = try VaultBundle.unpack(raw) }
-        catch { return .failure(.badBundle("\(error)")) }
-
+    /// backups is backed out entirely). Does NOT refresh the list: callers refresh
+    /// once after the whole (possibly multi-vault) import settles.
+    private func installVault(_ unpacked: [(name: String, data: Data)]) -> Result<VaultEntry, PortError> {
         let allowed = Set(Self.portableFiles)
         var files: [String: Data] = [:]
         for (name, data) in unpacked {
@@ -314,7 +349,7 @@ final class AppModel: ObservableObject {
 
         // Write the sealed files (NOT meta.json — registry.create already wrote a
         // fresh one). 0600, atomic. Then re-apply backup-exclusion the bundle could
-        // not carry. Any failure backs the whole import out.
+        // not carry. Any failure backs this vault's directory out.
         func write(_ name: String, _ data: Data) -> Bool {
             let url = entry.dir.appendingPathComponent(name)
             guard (try? data.write(to: url, options: .atomic)) != nil else { return false }
@@ -332,8 +367,72 @@ final class AppModel: ObservableObject {
         }
         DiagnosticLog(url: env.configuration(for: entry).diagnosticsLogURL)
             .record(.vaultImported, source: .app)
-        refreshEntries()
         return .success(entry)
+    }
+
+    /// Reconstitute a vault from a single-vault portable `.vault` file as a NEW vault
+    /// (fresh id). Refreshes the list and returns the new entry.
+    @discardableResult
+    func importVault(from src: URL) -> Result<VaultEntry, PortError> {
+        guard let raw = try? Data(contentsOf: src) else {
+            return .failure(.io("cannot read \(src.lastPathComponent)"))
+        }
+        let unpacked: [(name: String, data: Data)]
+        do { unpacked = try VaultBundle.unpack(raw) }
+        catch { return .failure(.badBundle("\(error)")) }
+        let result = installVault(unpacked)
+        if case .success = result { refreshEntries() }
+        return result
+    }
+
+    /// Import EVERY vault contained in a portable `.vault` file. Handles both shapes
+    /// transparently: a legacy single-vault bundle (entries are the sealed files
+    /// directly) imports as one vault; a multi-vault archive (entries are inner
+    /// bundles named `vault-N`) imports them all. Fail-closed for the batch — every
+    /// inner vault is unpacked and validated BEFORE any is written, and if writing one
+    /// fails the vaults already created in THIS import are rolled back, so an import
+    /// lands all of its vaults or none. Refreshes the list once; returns the new
+    /// entries.
+    @discardableResult
+    func importArchive(from src: URL) -> Result<[VaultEntry], PortError> {
+        guard let raw = try? Data(contentsOf: src) else {
+            return .failure(.io("cannot read \(src.lastPathComponent)"))
+        }
+        let outer: [(name: String, data: Data)]
+        do { outer = try VaultBundle.unpack(raw) }
+        catch { return .failure(.badBundle("\(error)")) }
+        guard !outer.isEmpty else { return .failure(.badBundle("the file contains no vaults")) }
+
+        // Disambiguate the two shapes by entry names. A legacy single bundle's entries
+        // are the sealed files (`vault.dat`, …); a multi archive's are `vault-N`. The
+        // two name sets are disjoint, so one is never misread as the other.
+        let portable = Set(Self.portableFiles)
+        let perVault: [[(name: String, data: Data)]]
+        if outer.contains(where: { portable.contains($0.name) }) {
+            perVault = [outer]                               // one legacy vault
+        } else {
+            // Multi archive: each outer entry is an inner bundle. Unpack + validate
+            // them ALL up front so one corrupt inner aborts before anything is written.
+            var parsed: [[(name: String, data: Data)]] = []
+            for (_, blob) in outer {
+                do { parsed.append(try VaultBundle.unpack(blob)) }
+                catch { return .failure(.badBundle("\(error)")) }
+            }
+            perVault = parsed
+        }
+
+        // Install all; if any fails, roll back everything created in this import.
+        var created: [VaultEntry] = []
+        for files in perVault {
+            switch installVault(files) {
+            case .success(let entry): created.append(entry)
+            case .failure(let err):
+                for entry in created { _ = registry.delete(id: entry.id) }
+                return .failure(err)
+            }
+        }
+        refreshEntries()
+        return .success(created)
     }
 
     /// The non-secret display label inside a bundle's meta.json, if it has a usable

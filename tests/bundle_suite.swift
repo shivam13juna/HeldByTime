@@ -96,4 +96,31 @@ func runBundleSuite() {
         let huge = Data(count: VaultBundle.maxTotalBytes + 1)
         expectBundleThrow("reject-too-large", .tooLarge, huge)
     }
+
+    // Bundle-of-bundles: a multi-vault export wraps each vault's inner bundle as an
+    // OUTER entry named `vault-N`. Unpacking the outer, then each inner, must recover
+    // every original vault's files — the round-trip the multi-vault archive relies on,
+    // pinned here at the pure-format level (no app / no I/O). `vault-N` is also a safe
+    // single-component name, so the outer parse never trips the path-traversal guard.
+    do {
+        let v0: [(name: String, data: Data)] = [
+            ("vault.dat", Data((0..<200).map { UInt8($0 & 0xff) })),
+            ("schedule.json", Data("{\"windows\":[]}".utf8)),
+        ]
+        let v1: [(name: String, data: Data)] = [
+            ("vault.dat", Data("second vault sealed bytes".utf8)),
+            ("meta.json", Data("{\"label\":\"Two\"}".utf8)),
+        ]
+        let outer = VaultBundle.pack([
+            ("vault-0", VaultBundle.pack(v0)),
+            ("vault-1", VaultBundle.pack(v1)),
+        ])
+        let gotOuter = (try? VaultBundle.unpack(outer)) ?? []
+        let i0 = gotOuter.first { $0.name == "vault-0" }.flatMap { try? VaultBundle.unpack($0.data) } ?? []
+        let i1 = gotOuter.first { $0.name == "vault-1" }.flatMap { try? VaultBundle.unpack($0.data) } ?? []
+        let ok = gotOuter.count == 2
+            && i0.count == v0.count && zip(i0, v0).allSatisfy { $0.name == $1.name && $0.data == $1.data }
+            && i1.count == v1.count && zip(i1, v1).allSatisfy { $0.name == $1.name && $0.data == $1.data }
+        bk("nested-roundtrip", ok, "pack-of-packs (vault-N → inner bundle) recovers every vault's files")
+    }
 }

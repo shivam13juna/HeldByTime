@@ -140,7 +140,7 @@ struct VaultRootView: View {
     private var phaseView: some View {
         switch vault.phase {
         case .loading:
-            ProgressView("Checking the time-lock…").padding()
+            ProgressView("Loading your vault…").padding()
         case .locked(let info):
             LockedView(info: info)
         case .unlockPrompt:

@@ -107,3 +107,24 @@ struct GlyphBadge: View {
         .frame(width: size, height: size)
     }
 }
+
+// MARK: - Inline-markdown text
+
+extension Text {
+    /// Render a string that contains inline markdown (e.g. `**bold**`). SwiftUI only
+    /// parses markdown when `Text` is handed a single string *literal*; our copy is
+    /// assembled from `"…" + "…"` runtime Strings, which take the verbatim
+    /// initializer and would show the literal `**` markers. Parsing to an
+    /// AttributedString (inline elements only, whitespace preserved) makes the
+    /// formatting render wherever the text is built at runtime.
+    init(markdown: String) {
+        if let attributed = try? AttributedString(
+            markdown: markdown,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            self.init(attributed)
+        } else {
+            self.init(verbatim: markdown)
+        }
+    }
+}

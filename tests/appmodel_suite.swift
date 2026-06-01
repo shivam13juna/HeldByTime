@@ -363,4 +363,94 @@ func runAppModelSuite() {
         amk("import-rejects-unknown-entry", bad && env.registry.list().isEmpty,
             "a bundle with an unexpected entry name ⇒ .badBundle and no vault is created")
     }
+
+    // Multi-vault export → import: exportVaults packs several vaults into ONE archive,
+    // importArchive reconstitutes every one (fresh ids, '(imported)' labels, identical
+    // sealed bytes), and all of them — plus the originals — are listed.
+    do {
+        let env = freshEnv()
+        let a = makeVault(env, "Alpha", at: 1000)
+        let b = makeVault(env, "Beta", at: 2000)
+        let aBytes = Data((0..<96).map { UInt8($0 & 0xff) })
+        let bBytes = Data("beta sealed bytes".utf8)
+        try? aBytes.write(to: a.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        try? bBytes.write(to: b.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        let model = AppModel(env: env)
+        model.refreshEntries()
+
+        let dest = env.vaultsRoot.appendingPathComponent("two.vault")
+        var exportOK = false
+        if case .success = model.exportVaults([a, b], to: dest) { exportOK = true }
+
+        var imported: [VaultEntry] = []
+        if case .success(let es) = model.importArchive(from: dest) { imported = es }
+        let importedBytes = Set(imported.compactMap { e in
+            try? Data(contentsOf: e.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        })
+        let bytesMatch = importedBytes == Set([aBytes, bBytes])
+        let freshIds = imported.count == 2 && Set(imported.map { $0.id }).isDisjoint(with: [a.id, b.id])
+        let labelsOK = imported.allSatisfy { $0.meta.label.contains("imported") }
+        let allListed = env.registry.list().count == 4
+
+        amk("export-import-multi-roundtrip",
+            exportOK && bytesMatch && freshIds && labelsOK && allListed,
+            "exportVaults([a,b]) → importArchive ⇒ two fresh vaults carrying both original blobs, all four listed")
+    }
+
+    // importArchive transparently reads a LEGACY single-vault bundle (the shape
+    // exportVault writes) as exactly one vault — old single exports still import.
+    do {
+        let env = freshEnv()
+        let a = makeVault(env, "Solo", at: 1000)
+        let bytes = Data("solo sealed bytes".utf8)
+        try? bytes.write(to: a.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        let model = AppModel(env: env)
+        let dest = env.vaultsRoot.appendingPathComponent("solo.vault")
+        _ = model.exportVault(a, to: dest)          // legacy single-vault format
+
+        var imported: [VaultEntry] = []
+        if case .success(let es) = model.importArchive(from: dest) { imported = es }
+        let sameBytes = imported.first.flatMap {
+            try? Data(contentsOf: $0.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        } == bytes
+        amk("import-archive-reads-legacy-single", imported.count == 1 && sameBytes,
+            "importArchive reads a single-vault bundle as one imported vault (backward compatible)")
+    }
+
+    // Exporting more vaults than one archive can hold ⇒ tooMany, BEFORE any file is
+    // written (the outer container caps at VaultBundle.maxEntries).
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        let many = (0...VaultBundle.maxEntries).map { i -> VaultEntry in
+            guard case .success(let e) = env.registry.create(label: "V\(i)") else {
+                fatalError("registry.create failed in tooMany setup")
+            }
+            return e
+        }
+        let dest = env.vaultsRoot.appendingPathComponent("too-many.vault")
+        var tooMany = false
+        if case .failure(.tooMany(VaultBundle.maxEntries)) = model.exportVaults(many, to: dest) { tooMany = true }
+        amk("export-too-many", tooMany && !fm.fileExists(atPath: dest.path),
+            "exporting more than maxEntries vaults ⇒ .tooMany and nothing written")
+    }
+
+    // A multi archive with one corrupt inner bundle ⇒ badBundle, and NOTHING is
+    // imported: every inner is validated up front, so a single bad one aborts the
+    // whole batch before any vault is created (all-or-none).
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        let goodInner = VaultBundle.pack([("vault.dat", Data("ok".utf8))])
+        let outer = VaultBundle.pack([
+            ("vault-0", goodInner),
+            ("vault-1", Data("not a valid inner bundle".utf8)),
+        ])
+        let p = env.vaultsRoot.appendingPathComponent("corrupt-multi.vault")
+        try? outer.write(to: p)
+        var bad = false
+        if case .failure(.badBundle) = model.importArchive(from: p) { bad = true }
+        amk("import-archive-corrupt-inner-rollback", bad && env.registry.list().isEmpty,
+            "a multi archive with one corrupt inner ⇒ .badBundle and no vault is created")
+    }
 }

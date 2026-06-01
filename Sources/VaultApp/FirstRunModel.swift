@@ -46,7 +46,7 @@ final class FirstRunModel: ObservableObject {
     var activitySubtitle: String {
         switch activity {
         case .creating: return "Setting up encryption and connecting to the time-lock "
-            + "network. This can take a few seconds."
+            + "network. This can take up to 30 seconds."
         case .selfTest: return "Making sure encryption works and the time-lock network "
             + "is reachable."
         case nil:       return ""
