@@ -14,7 +14,7 @@
 ![Built with](https://img.shields.io/badge/SwiftUI-%20-orange?logo=swift&logoColor=white)
 ![Time-lock](https://img.shields.io/badge/time--lock-drand%20%2B%20tlock-1f6feb)
 ![Encryption](https://img.shields.io/badge/encryption-AES--256--GCM%20%2F%20Argon2id-2ea043)
-![Release](https://img.shields.io/github/v/release/shivam13juna/mac-encryptor-app?label=download&color=8957e5)
+![Release](https://img.shields.io/github/v/release/shivam13juna/HeldByTime?label=download&color=8957e5)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 
 </div>
