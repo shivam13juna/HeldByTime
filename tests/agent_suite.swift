@@ -18,7 +18,7 @@ func runAgentSuite() {
     // stable and distinct.
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("vault-agent-\(UUID().uuidString)", isDirectory: true)
-    let agent = root.appendingPathComponent("EncryptedVault.app/Contents/Helpers/vaultreseal")
+    let agent = root.appendingPathComponent("HeldByTime.app/Contents/Helpers/vaultreseal")
     let plistURL = root.appendingPathComponent("LaunchAgents/\(LaunchAgentPlist.resealLabel).plist")
     let uid: uid_t = 501
     let domain = "gui/\(uid)"

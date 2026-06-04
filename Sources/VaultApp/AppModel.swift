@@ -264,7 +264,7 @@ final class AppModel: ObservableObject {
     ///
     /// Order: (1) bootout + delete the re-seal LaunchAgent; (2) when `deleteVaults`,
     /// unlink EVERY vault and the app-scope residue (app log + appearance) — the
-    /// whole EncryptedVault data tree, each unlinked and NEVER Trashed. It only ever
+    /// whole vault data tree, each unlinked and NEVER Trashed. It only ever
     /// DESTROYS; it never reveals a secret. Runs off the main thread (launchctl +
     /// filesystem) and reports the agent-removal outcome back on the main thread.
     func uninstallApplication(deleteVaults: Bool, completion: @escaping (Bool) -> Void) {

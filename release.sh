@@ -53,7 +53,7 @@ else
   echo "release.sh: working tree clean; tagging current HEAD as $TAG"
 fi
 
-git tag -a "$TAG" -m "EncryptedVault $TAG"
+git tag -a "$TAG" -m "HeldByTime $TAG"
 git push origin "$BRANCH"
 git push origin "$TAG"
 

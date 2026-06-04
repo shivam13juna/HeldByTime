@@ -81,8 +81,8 @@ struct VaultListView: View {
         .alert("Finish in the Finder", isPresented: $trashFallback) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("EncryptedVault's background helper has been removed (and any data "
-                 + "you chose to delete is gone). To finish, drag EncryptedVault to "
+            Text("HeldByTime's background helper has been removed (and any data "
+                 + "you chose to delete is gone). To finish, drag HeldByTime to "
                  + "the Trash.")
         }
         .sheet(isPresented: $showExportWarning) {
@@ -262,7 +262,7 @@ struct VaultListView: View {
     private func defaultExportName(_ entries: [VaultEntry]) -> String {
         entries.count == 1
             ? sanitizedFileName(entries[0].meta.label) + ".vault"
-            : "EncryptedVault-\(entries.count)-vaults.vault"
+            : "HeldByTime-\(entries.count)-vaults.vault"
     }
 
     /// Pick a `.vault` file and import every vault it contains (the model refreshes
@@ -272,7 +272,7 @@ struct VaultListView: View {
         panel.allowedContentTypes = [Self.vaultType]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a vault file exported from EncryptedVault."
+        panel.message = "Choose a vault file exported from HeldByTime."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if case .failure(let e) = model.importArchive(from: url) {
             portError = "Import failed: \(describe(e))"
@@ -512,9 +512,9 @@ struct UninstallSheet: View {
             Label("Uninstall this application?", systemImage: "trash")
                 .font(.title2).bold()
 
-            Text(markdown: "This removes EncryptedVault's background re-seal helper and moves "
+            Text(markdown: "This removes HeldByTime's background re-seal helper and moves "
                  + "the app to the Trash. **Your vaults are kept** — reinstalling "
-                 + "EncryptedVault re-opens them on their schedule.")
+                 + "HeldByTime re-opens them on their schedule.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 

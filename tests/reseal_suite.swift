@@ -10,7 +10,7 @@ import Foundation
 func runResealSuite() {
     // A deliberately awkward path: spaces AND an ampersand, to catch any
     // hand-rolled / unescaped XML regression.
-    let path = "/Applications/Tools & Vaults/EncryptedVault.app/Contents/Helpers/vaultreseal"
+    let path = "/Applications/Tools & Vaults/HeldByTime.app/Contents/Helpers/vaultreseal"
     let data = LaunchAgentPlist.reseal(programPath: path, intervalSeconds: 7200)
 
     check("reseal/plist-nonempty", !data.isEmpty, "serialised plist must not be empty")

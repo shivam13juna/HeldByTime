@@ -18,7 +18,7 @@ exist and cover the required legs — the same pattern as Task 11's `build/bundl
 ## Part 1 — automated live E2E
 
 ```sh
-./build.sh          # produce build/dist/EncryptedVault.app (gated on ./run_tests)
+./build.sh          # produce build/dist/HeldByTime.app (gated on ./run_tests)
 ./e2e_test          # ~3–4 min: crosses two real quicknet round boundaries
 ```
 
@@ -55,7 +55,7 @@ cleartext. Store the real secrets only after this checklist is green.
 Set a **short test window** in Settings (e.g. opening 2–3 minutes out, lasting ~2
 minutes) so you can cross a boundary by hand without waiting hours.
 
-- [ ] **1. Double-click `build/dist/EncryptedVault.app` in Finder.** It launches as
+- [ ] **1. Double-click `build/dist/HeldByTime.app` in Finder.** It launches as
       a windowed app — there is **no** terminal entry point, no CLI flags, no URL
       scheme. First run shows the setup + self-test gate.
 - [ ] **2. First-run self-test passes** on this machine (Argon2id vector, helper
@@ -70,7 +70,7 @@ minutes) so you can cross a boundary by hand without waiting hours.
 - [ ] **5. At the window, relaunch** → password prompt appears; unlock → the
       sentinel notes are shown. (This is the live open across a real boundary.)
 - [ ] **6. Force-kill mid-window:** with the vault open, in another terminal run
-      `kill -9 $(pgrep -x EncryptedVault)` (or Force Quit in Activity Monitor).
+      `kill -9 $(pgrep -x HeldByTime)` (or Force Quit in Activity Monitor).
 - [ ] **7. Scan for durable plaintext immediately:**
 
       ```sh

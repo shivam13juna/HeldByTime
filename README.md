@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🔒 EncryptedVault
+# 🔒 HeldByTime — a time-locked, encrypted vault for macOS
 
-<img src="assets/cover_image.png" alt="EncryptedVault" width="100%" />
+<img src="assets/cover_image.png" alt="HeldByTime" width="100%" />
 
 
 
@@ -23,7 +23,7 @@
 
 Most "locked" apps just put a password in front of your data. But if you know the
 password, nothing actually stops you from opening it whenever you want — the lock
-is a suggestion. **EncryptedVault is different:** outside your chosen window, the
+is a suggestion. **HeldByTime is different:** outside your chosen window, the
 key to decrypt the vault *does not exist on your machine yet*. There's nothing to
 bypass, because there's nothing to unlock.
 
@@ -31,7 +31,7 @@ bypass, because there's nothing to unlock.
 
 ## ✨ Why you might want this
 
-Some things are better on a schedule than on demand. EncryptedVault lets you bake
+Some things are better on a schedule than on demand. HeldByTime lets you bake
 that schedule into the data itself, instead of relying on a setting you can quietly
 turn off.
 
@@ -50,7 +50,7 @@ turn off.
 
 ## 🧰 What it does
 
-EncryptedVault is a small but complete vault manager — not a single locked box.
+HeldByTime is a small but complete vault manager — not a single locked box.
 Everything runs locally, as a standard (non-admin) user.
 
 - 🗃️ **Multiple independent vaults** — keep as many as you like, each with its own
@@ -145,11 +145,11 @@ deliberately copies the contents elsewhere — no local tool can prevent that.
 ## 📥 Download
 
 Grab the latest build from the [**Releases**](../../releases) page, unzip it, and
-move **EncryptedVault.app** to your Applications folder.
+move **HeldByTime.app** to your Applications folder.
 
 > The app is **ad-hoc signed** (not notarized), so on first launch macOS warns it's
 > from an unidentified developer. **Right-click the app → Open**, then confirm — or
-> run `xattr -dr com.apple.quarantine EncryptedVault.app`.
+> run `xattr -dr com.apple.quarantine HeldByTime.app`.
 
 ---
 
@@ -162,7 +162,7 @@ move **EncryptedVault.app** to your Applications folder.
   allowed or vaults won't open. The first-run check verifies this before you store
   anything.
 - 👤 **No administrator account needed.** Runs entirely as a standard user.
-- 🗄️ **Local storage only.** Vaults live in
+- 🗄️ **Local storage only.** Vaults live in the app's support folder,
   `~/Library/Application Support/EncryptedVault/`, which the app marks as excluded
   from Time Machine and iCloud — nothing is uploaded anywhere. Avoid *manually*
   copying a vault (or an export) into a synced or backed-up folder: that's the one
@@ -203,7 +203,7 @@ windows later, the **⋯ menu** for appearance, export/import, and uninstall, an
 ## 🧑‍💻 Building from source
 
 ```sh
-./build.sh          # runs the full test gate, then produces build/dist/EncryptedVault.app
+./build.sh          # runs the full test gate, then produces build/dist/HeldByTime.app
 ```
 
 `build.sh` won't produce an app unless the test suite passes first.

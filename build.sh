@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Task 11 (app.md §10 step 13). Assemble and sign the double-clickable
-# EncryptedVault.app, GATED on the test harness.
+# HeldByTime.app, GATED on the test harness.
 #
 # The cardinal rule (app.md §10 step 13, §11 "Required tests"): this script runs
 # the §11 hard-gate tests FIRST via ./run_tests and refuses to assemble or sign
@@ -22,13 +22,13 @@
 # in a hash that never matches the shipped binary — the app would (safely) fail
 # closed forever. We hash exactly the bytes the app will preflight at runtime.
 #
-# Output: build/dist/EncryptedVault.app  (build/ is gitignored — never committed).
+# Output: build/dist/HeldByTime.app  (build/ is gitignored — never committed).
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-APP_NAME="EncryptedVault"
+APP_NAME="HeldByTime"
 BUNDLE_ID="app.encryptedvault"
 # Single source of truth for the marketing version: the VERSION file at the repo
 # root (Android's versionName). Edit that one line and the app bundle, the release
