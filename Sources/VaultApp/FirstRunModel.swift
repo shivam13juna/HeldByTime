@@ -17,6 +17,10 @@ import Combine
 /// Drives the setup flow. All policy lives in FirstRunSetup/SelfTestEngine; this
 /// only marshals input and surfaces results.
 final class FirstRunModel: ObservableObject {
+    /// User-chosen vault name (NON-secret metadata — never part of the lock).
+    /// Seeded with the default label so the owner can accept it or type their own;
+    /// a blank name falls back to the default when the vault is created.
+    @Published var label: String
     @Published var password = ""
     @Published var confirmPassword = ""
     @Published var content = VaultContent.initialTemplate
@@ -59,12 +63,16 @@ final class FirstRunModel: ObservableObject {
     @Published var pendingWeakPassword = false
 
     private let config: AppConfiguration
-    private let onComplete: () -> Void
+    /// Called on a successful create, carrying the chosen label so the coordinator
+    /// can relabel the freshly sealed vault before opening it.
+    private let onComplete: (String) -> Void
     private let onCancel: () -> Void
 
     init(config: AppConfiguration,
-         onComplete: @escaping () -> Void,
+         defaultLabel: String,
+         onComplete: @escaping (String) -> Void,
          onCancel: @escaping () -> Void = {}) {
+        self.label = defaultLabel
         self.config = config
         self.onComplete = onComplete
         self.onCancel = onCancel
@@ -155,7 +163,7 @@ final class FirstRunModel: ObservableObject {
                 case .success(let report):
                     self.selfTest = report.selfTest
                     try? self.prefs.save(to: self.config.schedulePrefsURL)   // remember the windows
-                    self.onComplete()                                        // → AppModel.open()
+                    self.onComplete(self.label)                              // → AppModel.finishCreate(label:)
                 case .failure(.warningsNotConfirmed(let steps)):
                     self.pendingWarnings = steps                             // view asks to confirm
                 case .failure(let e):

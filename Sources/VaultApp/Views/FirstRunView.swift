@@ -28,6 +28,7 @@ struct FirstRunView: View {
                 }
                 .padding(.bottom, 4)
 
+                nameSection
                 passwordSection
                 secretsSection
                 windowsSection
@@ -94,6 +95,16 @@ struct FirstRunView: View {
     private var weakPasswordAlertBinding: Binding<Bool> {
         Binding(get: { setup.pendingWeakPassword },
                 set: { if !$0 { setup.pendingWeakPassword = false } })
+    }
+
+    private var nameSection: some View {
+        SectionCard(title: "Vault name", systemImage: "tag.fill",
+                    subtitle: "A label to tell this vault apart in the list. Just a name — "
+                        + "not a password, and not part of the lock. You can rename it later.") {
+            TextField("Vault name", text: $setup.label)
+                .textFieldStyle(.plain).font(.callout.weight(.medium))
+                .autocorrectionDisabled()
+        }
     }
 
     private var passwordSection: some View {

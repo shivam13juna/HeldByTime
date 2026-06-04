@@ -164,13 +164,21 @@ final class AppModel: ObservableObject {
             let config = env.configuration(for: entry)
             let frm = FirstRunModel(
                 config: config,
-                onComplete: { [weak self] in self?.finishCreate(entry) },
+                defaultLabel: entry.meta.label,
+                onComplete: { [weak self] label in self?.finishCreate(entry, label: label) },
                 onCancel:   { [weak self] in self?.cancelCreate(entry) })
             screen = .creating(frm)
         }
     }
 
-    private func finishCreate(_ entry: VaultEntry) {
+    private func finishCreate(_ entry: VaultEntry, label: String) {
+        // Apply the name chosen during setup (NON-secret metadata; a blank name
+        // keeps the default). Reuses the same rename path as the list view and is
+        // independent of the seal. refreshEntries then re-reads the new label.
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != entry.meta.label {
+            _ = registry.rename(id: entry.id, to: trimmed)
+        }
         refreshEntries()
         refreshResealSchedule()        // the new vault's window-end joins the triggers
         if let fresh = entries.first(where: { $0.id == entry.id }) {
