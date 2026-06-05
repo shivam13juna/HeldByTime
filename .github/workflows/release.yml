@@ -63,17 +63,17 @@ jobs:
         id: package
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
-          ZIP="EncryptedVault-${VERSION}.zip"
+          ZIP="HeldByTime-${VERSION}.zip"
           # ditto preserves the bundle layout, symlinks, and code signature that a
           # plain `zip` would corrupt.
-          ditto -c -k --sequesterRsrc --keepParent "build/dist/EncryptedVault.app" "$ZIP"
+          ditto -c -k --sequesterRsrc --keepParent "build/dist/HeldByTime.app" "$ZIP"
           shasum -a 256 "$ZIP" | tee "${ZIP}.sha256"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact (manual runs)
         uses: actions/upload-artifact@v5
         with:
-          name: EncryptedVault-app
+          name: HeldByTime-app
           path: |
             ${{ steps.package.outputs.zip }}
             ${{ steps.package.outputs.zip }}.sha256
@@ -88,19 +88,19 @@ jobs:
             ${{ steps.package.outputs.zip }}.sha256
           generate_release_notes: true
           body: |
-            ## EncryptedVault ${{ github.ref_name }}
+            ## HeldByTime ${{ github.ref_name }}
 
             A native macOS app for notes and secrets that can only be opened during
             time windows you choose. See the [README](../blob/main/README.md) for what
             it is and how it works.
 
             ### Install
-            1. Download and unzip `EncryptedVault-${{ github.ref_name }}.zip`.
-            2. Move **EncryptedVault.app** to your Applications folder.
+            1. Download and unzip `HeldByTime-${{ github.ref_name }}.zip`.
+            2. Move **HeldByTime.app** to your Applications folder.
             3. The app is **ad-hoc signed**, not notarized, so on first launch macOS
                will warn it's from an unidentified developer — **right-click the app →
                Open**, then confirm. (Or run `xattr -dr com.apple.quarantine
-               EncryptedVault.app`.)
+               HeldByTime.app`.)
 
             > Requires **macOS 14+ on Apple Silicon** and a network that allows
             > `api.drand.sh`. Verify the download with the included `.sha256` file.

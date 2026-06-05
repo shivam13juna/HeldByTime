@@ -18,7 +18,7 @@ struct VaultApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(Self.windowTitle) {
             RootView()
                 .environmentObject(model)
                 .frame(minWidth: 700, minHeight: 600)
@@ -31,6 +31,14 @@ struct VaultApp: App {
         // No "New Window" — a single vault window, no document surface.
         .commands { CommandGroup(replacing: .newItem) {} }
     }
+
+    /// Title-bar text: the product name plus the running version
+    /// (`CFBundleShortVersionString`, stamped from the root VERSION file by
+    /// build.sh), e.g. "HeldByTime 1.4.3". Shown so the owner can read their
+    /// installed version at a glance — and match it against the update banner.
+    /// A non-literal `String` binds the `StringProtocol` WindowGroup initializer
+    /// (a plain title), not the LocalizedStringKey one.
+    private static var windowTitle: String { "HeldByTime \(AppVersion.current)" }
 }
 
 /// Seals on graceful termination. `applicationShouldTerminate` re-seals an open
