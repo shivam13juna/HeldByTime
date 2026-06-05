@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 
 struct VaultListView: View {
     @EnvironmentObject private var model: AppModel
+    /// Opens the release page in the browser for the update banner's "View release".
+    @Environment(\.openURL) private var openURL
     @State private var showMergedLog = false
     /// Rename: the targeted vault + the editable name (alert with a text field).
     @State private var renameTarget: VaultEntry?
@@ -33,6 +35,7 @@ struct VaultListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            if !isSelecting { updateBanner }
             if model.entries.isEmpty {
                 emptyState
             } else {
@@ -54,7 +57,7 @@ struct VaultListView: View {
         }
         .padding(VaultUI.screenPadding)
         .frame(maxWidth: 820, maxHeight: .infinity, alignment: .top)
-        .onAppear { model.refreshEntries() }
+        .onAppear { model.refreshEntries(); model.checkForUpdates() }
         .sheet(isPresented: $showMergedLog) {
             MergedLogView(loadLines: { model.mergedLogLines() },
                           clearAll: { model.clearAllLogs() })
@@ -150,6 +153,18 @@ struct VaultListView: View {
 
                 Divider()
 
+                // Notify-only updates: a toggle for the automatic launch check and a
+                // manual "check now". Nothing here downloads or installs — both only
+                // surface the banner; the user updates manually.
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { model.uiPrefs.autoCheckUpdates },
+                    set: { model.setAutoCheckUpdates($0) }))
+                Button { model.checkForUpdates(force: true) } label: {
+                    Label("Check for updates now", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Divider()
+
                 Button(role: .destructive) { showUninstall = true } label: {
                     Label("Uninstall application…", systemImage: "trash")
                 }
@@ -179,6 +194,39 @@ struct VaultListView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(selected.isEmpty)
+        }
+    }
+
+    /// A quiet, dismissible "a newer version is available" banner. Notify-only: it
+    /// never downloads or installs — "View release" just opens the release page in
+    /// the browser, where the user updates manually. "Skip" hides it until a newer
+    /// version ships; the ✕ dismisses it for this session only.
+    @ViewBuilder
+    private var updateBanner: some View {
+        if let update = model.availableUpdate {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.title2).foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("HeldByTime \(update.version) is available")
+                        .font(.callout.weight(.semibold))
+                    Text("You're on \(AppVersion.current). Updates are manual — this just lets you know.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("View release") { openURL(update.releaseURL) }
+                    .buttonStyle(.borderedProminent)
+                Button("Skip") { model.skipUpdate(update) }
+                    .help("Hide until a newer version is released")
+                Button { model.dismissUpdateBanner() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss for now")
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.accentColor.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.25)))
         }
     }
 

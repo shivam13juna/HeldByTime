@@ -57,6 +57,19 @@ extension View {
             )
             .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
     }
+
+    /// The app's standard editable-field chrome: a filled, separator-bordered box so
+    /// a borderless `TextField`/`SecureField` visibly reads as "type here" instead of
+    /// static text. Single source of truth shared by the password fields
+    /// (RevealableSecureField) and the plain text fields (vault name, secret label),
+    /// so every editable field looks identical. Purely cosmetic — no secret handling.
+    func fieldBox() -> some View {
+        self
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+    }
 }
 
 /// A titled glass "section" panel for the form-style screens (editor, first-run,

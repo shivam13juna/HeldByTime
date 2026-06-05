@@ -32,16 +32,22 @@ final class AppModel: ObservableObject {
     @Published var advisoryOpenings: [String: Date] = [:]
     /// App-global cosmetic appearance (light/dark), shared by every vault.
     @Published var uiPrefs: UIPrefs
+    /// A newer release the notify-only check found (nil = none / dismissed). Drives
+    /// the home-screen banner. NEVER authorizes anything — purely informational.
+    @Published var availableUpdate: AvailableUpdate?
 
     let env: AppEnvironment
+    /// Performs the one outbound update request (injected so tests use a stub).
+    private let updateChecker: UpdateChecking
 
     /// App-scope diagnostics (not tied to a vault): launch + agent registration.
     var appLog: DiagnosticLog { DiagnosticLog(url: env.appLogURL) }
     private var registry: VaultRegistry { env.registry }
 
-    init(env: AppEnvironment = .live) {
+    init(env: AppEnvironment = .live, updateChecker: UpdateChecking = LiveUpdateChecker()) {
         ProcessHardening.disableCoreDumps()   // no core file can hold decrypted secrets
         self.env = env
+        self.updateChecker = updateChecker
         self.uiPrefs = (try? UIPrefs.load(from: env.uiPrefsURL)) ?? .default
     }
 
@@ -254,6 +260,62 @@ final class AppModel: ObservableObject {
     func applyAppearance(_ appearance: Appearance) {
         uiPrefs.appearance = appearance
         try? uiPrefs.save(to: env.uiPrefsURL)
+    }
+
+    // MARK: - Update check (notify-only)
+
+    /// Minimum spacing between AUTOMATIC checks, so relaunching the app doesn't hit
+    /// GitHub every launch. A manual "Check now" (`force: true`) bypasses it.
+    private static let updateCheckInterval: TimeInterval = 6 * 3600
+
+    /// Notify-only update check. Respects the user's `autoCheckUpdates` preference
+    /// (unless `force`, the manual "Check now"), throttles automatic checks, and on
+    /// a newer release publishes `availableUpdate` so the list shows a banner —
+    /// UNLESS the user already chose to skip exactly that version. It NEVER downloads
+    /// or installs; it only learns a version + URL. Fails silent. Records a
+    /// secret-free app-scope line so the activity log shows it ran. Triggered from
+    /// the list view's `onAppear` (NOT bootstrap), so the headless tests — which
+    /// never render a view — make no network call.
+    func checkForUpdates(force: Bool = false) {
+        if !force {
+            guard uiPrefs.autoCheckUpdates else { return }
+            if let last = uiPrefs.lastUpdateCheck,
+               Date().timeIntervalSince(last) < Self.updateCheckInterval { return }
+        }
+        // Stamp the attempt time immediately so rapid relaunches don't re-fire.
+        uiPrefs.lastUpdateCheck = Date()
+        try? uiPrefs.save(to: env.uiPrefsURL)
+
+        let log = appLog
+        let skipped = uiPrefs.skippedUpdateVersion
+        updateChecker.check(currentVersion: AppVersion.current) { [weak self] update in
+            DispatchQueue.main.async {
+                log.record(.checkedForUpdates(available: update?.version), source: .app)
+                guard let self else { return }
+                // Honor a prior "skip this version"; a newer one still surfaces.
+                if let update, update.version != skipped { self.availableUpdate = update }
+            }
+        }
+    }
+
+    /// Hide the banner for a SPECIFIC version permanently (until a strictly newer one
+    /// appears). Persists the skipped version; non-secret.
+    func skipUpdate(_ update: AvailableUpdate) {
+        uiPrefs.skippedUpdateVersion = update.version
+        try? uiPrefs.save(to: env.uiPrefsURL)
+        if availableUpdate?.version == update.version { availableUpdate = nil }
+    }
+
+    /// Dismiss the banner for THIS session only (it may reappear next launch). No
+    /// persistence — distinct from `skipUpdate`.
+    func dismissUpdateBanner() { availableUpdate = nil }
+
+    /// Turn the automatic check on/off (persisted). Turning it ON runs an immediate
+    /// forced check so the user sees a result right away.
+    func setAutoCheckUpdates(_ enabled: Bool) {
+        uiPrefs.autoCheckUpdates = enabled
+        try? uiPrefs.save(to: env.uiPrefsURL)
+        if enabled { checkForUpdates(force: true) }
     }
 
     // MARK: - Uninstall

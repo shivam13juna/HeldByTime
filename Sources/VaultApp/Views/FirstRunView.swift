@@ -40,11 +40,15 @@ struct FirstRunView: View {
                         .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
 
+                // Optional preview: lets a curious owner SEE the on-device checks
+                // pass before committing a password. NOT a required step — Create
+                // vault runs the same self-test as a hard gate regardless (see
+                // FirstRunSetup.create). Kept quiet/borderless so it reads as an
+                // optional link, not a co-equal action competing with Create.
+                selfTestPreviewButton
+
                 HStack {
                     Spacer()
-                    Button("Run self-test") { setup.runSelfTest() }
-                        .controlSize(.large)
-                        .disabled(setup.running)
                     Button("Create vault") { setup.create() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
@@ -104,6 +108,7 @@ struct FirstRunView: View {
             TextField("Vault name", text: $setup.label)
                 .textFieldStyle(.plain).font(.callout.weight(.medium))
                 .autocorrectionDisabled()
+                .fieldBox()
         }
     }
 
@@ -130,11 +135,11 @@ struct FirstRunView: View {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach($setup.content.secrets) { $secret in
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
+                        HStack(spacing: 8) {
                             TextField("Label (e.g. macOS admin password)", text: $secret.label)
                                 .textFieldStyle(.plain).font(.callout.weight(.medium))
                                 .autocorrectionDisabled()
-                            Spacer()
+                                .fieldBox()
                             Button(role: .destructive) {
                                 setup.content.secrets.removeAll { $0.id == secret.id }
                             } label: { Image(systemName: "trash") }
@@ -208,6 +213,22 @@ struct FirstRunView: View {
             .frame(maxWidth: 320)
             .glassCard()
         }
+    }
+
+    /// Quiet, optional "check my Mac first" link. Runs the self-test on its own so
+    /// the per-step report appears above (selfTestSection) before any password is
+    /// committed. Borderless + small so it reads as an optional preview, not a
+    /// required step — Create vault runs the same gate either way.
+    private var selfTestPreviewButton: some View {
+        Button { setup.runSelfTest() } label: {
+            Label(setup.selfTest.isEmpty ? "Check my Mac first (optional)" : "Re-run check",
+                  systemImage: "checkmark.shield")
+                .font(.callout)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .disabled(setup.running)
+        .help("Optional — runs the on-device self-test now. Create vault runs it automatically either way.")
     }
 
     @ViewBuilder

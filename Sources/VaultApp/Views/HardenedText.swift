@@ -70,10 +70,7 @@ struct RevealableSecureField: View {
                         .onSubmit(onSubmit)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+            .fieldBox()   // shared editable-field chrome (Theme.swift)
 
             Button { revealed.toggle() } label: {
                 // Icon signifies the current STATE, not the action: an open eye when

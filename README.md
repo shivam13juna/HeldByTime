@@ -10,11 +10,11 @@
 
 <br/>
 
-![Platform](https://img.shields.io/badge/macOS-14%2B%20Apple%20Silicon-000000?logo=apple&logoColor=white)
-![Built with](https://img.shields.io/badge/SwiftUI-%20-orange?logo=swift&logoColor=white)
+![Platform](https://img.shields.io/badge/macOS-14%2B%20Apple%20Silicon-000000?logo=apple&logoColor=white&v=2)
+![Built with](https://img.shields.io/badge/SwiftUI-%20-orange?logo=swift&logoColor=white&v=2)
 ![Time-lock](https://img.shields.io/badge/time--lock-drand%20%2B%20tlock-1f6feb)
 ![Encryption](https://img.shields.io/badge/encryption-AES--256--GCM%20%2F%20Argon2id-2ea043)
-![Release](https://img.shields.io/github/v/release/shivam13juna/HeldByTime?label=download&color=8957e5)
+![Release](https://img.shields.io/github/v/release/shivam13juna/HeldByTime?label=download&color=8957e5&v=2)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 
 </div>
@@ -52,6 +52,14 @@ turn off.
 
 HeldByTime is a small but complete vault manager — not a single locked box.
 Everything runs locally, as a standard (non-admin) user.
+
+<div align="center">
+  <img src="assets/Vault_UI.png" alt="The HeldByTime home screen listing your vaults" width="88%" />
+  <br/>
+  <sub><em>The home screen — every vault, its next opening window, and its lock state at a glance.</em></sub>
+</div>
+
+<br/>
 
 - 🗃️ **Multiple independent vaults** — keep as many as you like, each with its own
   password and its own daily schedule. Open, rename, or permanently delete any of
@@ -147,6 +155,11 @@ deliberately copies the contents elsewhere — no local tool can prevent that.
 Grab the latest build from the [**Releases**](../../releases) page, unzip it, and
 move **HeldByTime.app** to your Applications folder.
 
+Once it's running, HeldByTime **tells you when a new version is out** — it checks
+this Releases page and shows a banner, but never downloads or installs anything
+itself; you always update by grabbing the build here. Turn the check off anytime
+from the **⋯ menu**.
+
 > The app is **ad-hoc signed** (not notarized), so on first launch macOS warns it's
 > from an unidentified developer. **Right-click the app → Open**, then confirm — or
 > run `xattr -dr com.apple.quarantine HeldByTime.app`.
@@ -189,6 +202,14 @@ If any hard check fails, the app **refuses to store anything**. A softer warning
 continuing. Then you choose a password — the app rates its strength but **never
 blocks a weak one**; it's your call — set one or more daily windows, add your notes
 and labelled secrets, and create the vault. It seals immediately to the next window.
+
+<div align="center">
+  <img src="assets/creation_of_vault.png" alt="The HeldByTime first-run setup screen" width="44%" />
+  <br/>
+  <sub><em>First-run setup — name, password, secrets, and daily windows, gated by an on-device self-test.</em></sub>
+</div>
+
+<br/>
 
 After that, the home screen lists all your vaults. Use **New vault** to add more
 (each gets its own password and schedule), a vault's **Settings** to adjust its

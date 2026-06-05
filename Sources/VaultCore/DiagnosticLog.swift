@@ -40,6 +40,7 @@ public enum DiagnosticEvent {
     case agentRemoved(success: Bool)        // the LaunchAgent uninstall (bootout + plist delete) outcome
     case vaultExported                      // a portable (.vault) copy of this vault was written
     case vaultImported                      // this vault was reconstituted from a portable copy
+    case checkedForUpdates(available: String?)  // notify-only update check ran (newer version string, or nil = up to date)
 }
 
 /// Appends non-secret events to a small capped text file and reads them back.
@@ -146,6 +147,8 @@ public struct DiagnosticLog {
             return "exported a portable copy of this vault"
         case .vaultImported:
             return "imported this vault from a portable copy"
+        case .checkedForUpdates(let available):
+            return available.map { "checked for updates → \($0) available" } ?? "checked for updates → up to date"
         }
     }
 

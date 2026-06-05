@@ -30,9 +30,23 @@ enum Appearance: String, Codable, CaseIterable, Identifiable {
 
 /// Cosmetic, non-secret UI preferences. Persisted as plain JSON in its own file
 /// so it is independent of the schedule (a decode failure here can never clobber
-/// the user's windows). New fields should default so older files still decode.
+/// the user's windows). New fields default AND decode-tolerantly (see the custom
+/// `init(from:)`), so an older ui.json still loads without resetting the fields it
+/// does contain.
 struct UIPrefs: Codable, Equatable {
     var appearance: Appearance = .system
+
+    /// Notify-only update check (no download / no install). When true (default), the
+    /// app asks GitHub's PUBLIC releases endpoint on launch whether a newer version
+    /// exists and shows a dismissible banner. Cosmetic + non-secret like the
+    /// appearance — it never touches a vault, a password, or a schedule.
+    var autoCheckUpdates: Bool = true
+    /// A release the user chose to skip; the banner stays hidden until a version
+    /// strictly newer than this appears. A public version string — non-secret.
+    var skippedUpdateVersion: String? = nil
+    /// When the last update check ran, so relaunching throttles to ~once per
+    /// interval instead of hitting GitHub every launch.
+    var lastUpdateCheck: Date? = nil
 
     static let `default` = UIPrefs()
 
@@ -47,5 +61,24 @@ struct UIPrefs: Codable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: url, options: .atomic)
+    }
+}
+
+extension UIPrefs {
+    /// Tolerant decode: every field falls back to its default when ABSENT, so an
+    /// older ui.json (written before a field existed) still loads WITHOUT resetting
+    /// the fields it does contain — e.g. a saved appearance survives an upgrade that
+    /// adds the update-check fields. Synthesized Decodable would instead throw on a
+    /// missing key, which (via `load`'s caller falling back to `.default`) would
+    /// silently wipe the user's appearance. A present-but-wrong-TYPE value still
+    /// throws, exactly as before. The memberwise/`init()` initializers stay
+    /// synthesized because this lives in an extension, not the struct body.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = UIPrefs()
+        self.appearance = try c.decodeIfPresent(Appearance.self, forKey: .appearance) ?? d.appearance
+        self.autoCheckUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? d.autoCheckUpdates
+        self.skippedUpdateVersion = try c.decodeIfPresent(String.self, forKey: .skippedUpdateVersion) ?? d.skippedUpdateVersion
+        self.lastUpdateCheck = try c.decodeIfPresent(Date.self, forKey: .lastUpdateCheck) ?? d.lastUpdateCheck
     }
 }
