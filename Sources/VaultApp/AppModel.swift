@@ -159,8 +159,17 @@ final class AppModel: ObservableObject {
     /// decrypted plaintext. An expired set-down vault is closed by the agent's
     /// window-end trigger and the next defensive re-seal on load.
     func closeCurrent() {
+        // Capture the vault being left BEFORE we navigate, so we can tear it down once
+        // it's off screen.
+        let leaving: VaultModel?
+        if case .open(let vm) = screen { leaving = vm } else { leaving = nil }
         refreshEntries()
-        screen = .list
+        screen = .list                 // unmount the editor first…
+        leaving?.setDown()             // …then synchronously zero its plaintext and stop
+                                       // its window-end monitor (no seal — the on-disk blob
+                                       // stays openable this window and reopens with the
+                                       // password). `leaving` is the last reference, so the
+                                       // model is released as soon as this returns.
     }
 
     // MARK: - Create

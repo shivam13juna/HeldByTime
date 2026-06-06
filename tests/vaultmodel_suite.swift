@@ -236,9 +236,9 @@ func runVaultModelSuite() {
         if case .unlocked = vm.phase { stillUnlocked = true }
         let last = vm.diagnosticsLog.tail().last ?? ""
         vmk("lock-failclosed-stays-open",
-            ok == false && stillUnlocked && (vm.unlockError?.isEmpty == false)
+            ok == false && stillUnlocked && (vm.sealError?.isEmpty == false)
               && last.contains("re-seal failed") && fake.sealCalls == 0,
-            "offline Lock ⇒ false, stays unlocked, error shown, coarse log, nothing sealed")
+            "offline Lock ⇒ false, stays unlocked, seal error shown, coarse log, nothing sealed")
     }
 
     // Over-cap notes ⇒ encode() fails BEFORE any seal: false, size message, no seal.
@@ -251,8 +251,55 @@ func runVaultModelSuite() {
         vm.content = VaultContent(notes: String(repeating: "a", count: VaultConstants.MAX_PLAINTEXT_NOTES_BYTES + 1))
         let ok = vm.lock(trigger: .lockButton)
         vmk("notes-too-large-no-seal",
-            ok == false && (vm.unlockError?.contains("too large") == true) && fake.sealCalls == 0,
+            ok == false && (vm.sealError?.contains("too large") == true) && fake.sealCalls == 0,
             "over-cap notes ⇒ lock() false with a size error and NO seal attempted")
+    }
+
+    // ===== sealForQuit (Save & Quit) + setDown (leave) — Model 1 =====
+
+    // Save & Quit while OFFLINE: the forward seal fails, so sealForQuit() returns FALSE
+    // (the AppKit delegate must then NOT quit), the session STAYS open with the plaintext
+    // intact (the edits the user asked to save are NOT lost), and sealError is set so the
+    // editor can show why. This is the guard against silently dropping edits on quit.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let fake = FakeSeal(R: R); fake.offline = true
+        let session = VaultSession(store: fakeStore(entry.dir, fake),
+                                   password: password, openWindow: vmWin(R - 100, R + 100))
+        vm.phase = .unlocked(session)
+        vm.content = VaultContent(notes: "don't lose me")
+        let ok = vm.sealForQuit()
+        var stillUnlocked = false; if case .unlocked = vm.phase { stillUnlocked = true }
+        vmk("sealforquit-offline-false-stays-open",
+            ok == false && stillUnlocked && (vm.sealError?.isEmpty == false)
+              && vm.content.notes == "don't lose me" && fake.sealCalls == 0,
+            "offline Save & Quit ⇒ false (do not quit), stays open, edits intact, error shown")
+    }
+
+    // sealForQuit() with NOTHING open to save returns true — there are no edits to lose,
+    // so a graceful quit proceeds at once. (The success-when-unlocked path is `lock()`,
+    // already covered by lock-forward-only, so we don't repeat its Argon2 here.)
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        vm.phase = .locked(LockScreen.describe(.offline, calendar: cal, now: now))
+        vmk("sealforquit-nothing-to-save-true", vm.sealForQuit() == true,
+            "no open session ⇒ sealForQuit() true (nothing to save, safe to quit)")
+    }
+
+    // setDown() (the leave path) zeroes the in-RAM plaintext WITHOUT sealing — the
+    // on-disk blob is left untouched (Model 1), so NOTHING is sealed and the model holds
+    // no plaintext or baseline after (and it is therefore no longer dirty).
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let fake = FakeSeal(R: R)
+        let session = VaultSession(store: fakeStore(entry.dir, fake),
+                                   password: password, openWindow: vmWin(R - 100, R + 100))
+        vm.phase = .unlocked(session)
+        vm.content = VaultContent(notes: "in ram only", secrets: [VaultSecret(label: "k", value: "v")])
+        vm.setDown()
+        vmk("setdown-clears-plaintext-no-seal",
+            vm.content == VaultContent() && vm.isDirty == false && fake.sealCalls == 0,
+            "leaving sets the vault down: plaintext zeroed, nothing sealed (blob stays openable this window)")
     }
 
     // ===== schedule edit + re-entrancy =====

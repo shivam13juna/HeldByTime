@@ -23,6 +23,10 @@ struct NotesEditorView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            // A re-seal (Lock now / Save & Lock / Save & Quit) that couldn't complete —
+            // e.g. offline — surfaces here instead of failing silently. The vault is still
+            // open and the notes are unchanged on disk; the banner says so and is dismissible.
+            if let err = vault.sealError { sealErrorBanner(err) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     secretsSection
@@ -64,6 +68,31 @@ struct NotesEditorView: View {
             .padding(28)
             .glassCard()
         }
+    }
+
+    /// The inline warning shown when `vault.sealError` is set — a re-seal that couldn't
+    /// complete (offline, or notes over the cap). It makes the failed lock visible rather
+    /// than a silent no-op; the user can dismiss it, and it also clears itself on the next
+    /// seal attempt or a successful seal.
+    private func sealErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button { vault.sealError = nil } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
     }
 
     private var header: some View {

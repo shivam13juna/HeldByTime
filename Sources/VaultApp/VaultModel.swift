@@ -41,6 +41,14 @@ final class VaultModel: ObservableObject, Identifiable {
     private var loadedBaseline: VaultContent?
     /// Transient message for the unlock prompt (e.g. wrong password).
     @Published var unlockError: String?
+    /// Transient message shown IN THE EDITOR when a re-seal (Lock now / Save & Lock /
+    /// Save & Quit) cannot complete — e.g. offline, so the forward seal's round fetch
+    /// fails, or notes over the size cap. Kept SEPARATE from `unlockError` (the unlock
+    /// PROMPT's auth message) because a failed seal leaves the vault open and editable:
+    /// the editor surfaces this so the lock action is never a silent no-op (the notes
+    /// are unchanged on disk). Cleared when a seal is retried or succeeds, and on a
+    /// fresh unlock.
+    @Published var sealError: String?
     /// This vault's schedule (windows). Settings edits this.
     @Published var schedulePrefs: SchedulePrefs
 
@@ -218,6 +226,7 @@ final class VaultModel: ObservableObject, Identifiable {
             loadedBaseline = content        // the diff target for unsaved-edits detection
             diagnosticsLog.record(.unlock(success: true), source: .app)
             unlockError = nil
+            sealError = nil                 // a freshly opened editor shows no stale seal error
             phase = .unlocked(opened.session)
         }
     }
@@ -236,9 +245,10 @@ final class VaultModel: ObservableObject, Identifiable {
     @discardableResult
     func lock(trigger: VaultSession.Trigger = .lockButton) -> Bool {
         guard case let .unlocked(session) = phase else { return false }
+        sealError = nil
         let notes: [UInt8]
         do { notes = try content.encode() }
-        catch { unlockError = "Notes too large to save."; return false }
+        catch { sealError = "Notes too large to save."; return false }
         switch session.reseal(notes: notes, trigger: trigger) {
         case .success(let window):
             diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
@@ -249,7 +259,7 @@ final class VaultModel: ObservableObject, Identifiable {
             return true
         case .failure:
             diagnosticsLog.record(.resealFailed, source: .app)
-            unlockError = "Could not re-lock the vault (are you online?). Your notes are unchanged on disk."
+            sealError = "Could not re-lock the vault (are you online?). Your notes are unchanged on disk."
             return false
         }
     }
@@ -280,9 +290,10 @@ final class VaultModel: ObservableObject, Identifiable {
     /// `lock()` is retained for the synchronous Cmd-Q teardown path, which cannot await.
     func sealInteractively(trigger: VaultSession.Trigger, completion: @escaping (Bool) -> Void) {
         guard case let .unlocked(session) = phase, !isSealing else { completion(false); return }
+        sealError = nil
         let notes: [UInt8]
         do { notes = try content.encode() }
-        catch { unlockError = "Notes too large to save."; completion(false); return }
+        catch { sealError = "Notes too large to save."; completion(false); return }
         isSealing = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = session.reseal(notes: notes, trigger: trigger)
@@ -298,21 +309,39 @@ final class VaultModel: ObservableObject, Identifiable {
                     completion(true)
                 case .failure:
                     self.diagnosticsLog.record(.resealFailed, source: .app)
-                    self.unlockError = "Could not re-lock the vault (are you online?). Your notes are unchanged on disk."
+                    self.sealError = "Could not re-lock the vault (are you online?). Your notes are unchanged on disk."
                     completion(false)
                 }
             }
         }
     }
 
-    /// Seal-on-graceful-quit / on leaving the vault. Returns true once it is safe
-    /// to proceed. If unlocked we re-seal first (best effort); whether or not that
-    /// succeeds we allow proceeding — a failed seal leaves the on-disk blob as it
-    /// was, and the launch-time / agent defensive re-seal closes the gap.
+    /// Save-and-quit: re-seal the open session FORWARD so the edits are persisted, and
+    /// report whether that actually succeeded. Returns true when there is nothing to
+    /// save (no open session) OR the forward seal succeeded; returns false when an open
+    /// session could NOT be sealed (e.g. offline) — in which case the plaintext is still
+    /// in the model, `sealError` is set, and the caller MUST NOT quit (quitting would
+    /// silently lose the very edits the user asked to save). The synchronous `lock()` is
+    /// used here because the AppKit terminate reply cannot await.
     @discardableResult
     func sealForQuit() -> Bool {
-        if case .unlocked = phase { _ = lock(trigger: .gracefulQuit) }
+        if case .unlocked = phase { return lock(trigger: .gracefulQuit) }
         return true
+    }
+
+    /// Set the vault DOWN without sealing — the Model 1 leave path. Synchronously drops
+    /// the in-RAM plaintext and stops the window-end monitor, leaving the on-disk blob
+    /// UNTOUCHED (still openable in its current window; it reopens with the password).
+    /// The model is released right after we navigate away, but we don't wait on ARC: we
+    /// zero the plaintext here and now and invalidate the timer, so no orphaned heartbeat
+    /// can fire on a model that's no longer on screen. Idempotent and safe from any phase
+    /// — a non-unlocked vault holds no plaintext and has no timer, so this is a no-op
+    /// there. Never seals (that would be a forward re-lock; leaving must not lock you out).
+    func setDown() {
+        windowEndTimer?.invalidate()
+        windowEndTimer = nil
+        content = VaultContent()
+        loadedBaseline = nil
     }
 
     // MARK: - Window-end monitor (forced re-lock while unlocked)

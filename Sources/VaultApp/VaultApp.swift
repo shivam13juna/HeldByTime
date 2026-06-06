@@ -107,9 +107,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Discard & Quit")    // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")            // .alertThirdButtonReturn
         switch alert.runModal() {
-        case .alertFirstButtonReturn:  vm.sealForQuit(); return true   // forward-seal, then exit
-        case .alertSecondButtonReturn: return true                     // exit; edits lost, blob stays open this window
-        default:                       return false                    // Cancel: stay
+        case .alertFirstButtonReturn:
+            // Save & Quit: exit ONLY if the forward seal actually persisted the edits. If
+            // it couldn't (e.g. offline), DON'T quit — keep the session open with the edits
+            // intact; the editor shows vm.sealError so the failure is never silent.
+            return vm.sealForQuit()
+        case .alertSecondButtonReturn:
+            return true                     // Discard & Quit: exit; edits lost, blob stays open this window
+        default:
+            return false                    // Cancel: stay
         }
     }
 
