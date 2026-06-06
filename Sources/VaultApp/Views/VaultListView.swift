@@ -1,9 +1,9 @@
 // VaultListView.swift — the multi-vault home. Lists every vault on disk and lets
 // the user open one, create another, relabel or permanently delete one, and view
-// the merged activity log. Each row shows an ADVISORY next-window opening (wall
-// clock, schedule-derived) — never the real lock state: selecting a vault is the
-// ONLY way to reach its authoritative lock screen, and this view never reads a
-// vault's contents or sealed bytes.
+// the merged activity log. Each row shows an ADVISORY window hint — the next opening,
+// or "open now" while a window is in progress (wall clock, schedule-derived) — never
+// the real lock state: selecting a vault is the ONLY way to reach its authoritative
+// lock screen, and this view never reads a vault's contents or sealed bytes.
 
 import SwiftUI
 import AppKit
@@ -44,6 +44,7 @@ struct VaultListView: View {
                         ForEach(model.entries, id: \.id) { entry in
                             VaultRow(entry: entry,
                                      nextOpening: model.advisoryOpenings[entry.id],
+                                     isOpenNow: model.advisoryOpenNow.contains(entry.id),
                                      isSelecting: isSelecting,
                                      isSelected: selected.contains(entry.id),
                                      onToggleSelect: { toggleSelect(entry) },
@@ -371,16 +372,19 @@ struct VaultListView: View {
     }
 }
 
-/// One row in the vault list: lock glyph, label, and the ADVISORY next-window
-/// opening, followed by three explicit per-vault actions — rename, delete, and
-/// open — each a labelled icon button. No hidden menu and no row-wide tap target:
-/// opening a vault is an intentional click on its own control (the only path to
-/// that vault's authoritative lock screen).
+/// One row in the vault list: lock glyph, label, and an ADVISORY window hint ("open
+/// now", or the next opening), followed by three explicit per-vault actions — rename,
+/// delete, and open — each a labelled icon button. No hidden menu and no row-wide tap
+/// target: opening a vault is an intentional click on its own control (the only path
+/// to that vault's authoritative lock screen).
 struct VaultRow: View {
     let entry: VaultEntry
     /// Advisory next scheduled opening (wall clock). DISPLAY ONLY — never the real
     /// lock state; nil if the vault has no usable schedule.
     let nextOpening: Date?
+    /// Advisory: the schedule places NOW inside a window, so the row reads "Open now".
+    /// DISPLAY ONLY — never the authoritative lock state (opening runs the real gate).
+    let isOpenNow: Bool
     /// Selection mode (export picker): show a checkbox in place of the lock glyph and
     /// turn the whole row into a toggle; the per-vault action buttons are hidden.
     let isSelecting: Bool
@@ -398,8 +402,11 @@ struct VaultRow: View {
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
                     .frame(width: 24)
             } else {
-                Image(systemName: "lock.fill")
-                    .foregroundStyle(.secondary)
+                // Advisory open/closed padlock — green open when the schedule says we're
+                // in a window now (unlock it with the password), else the quiet closed
+                // lock. The authoritative state is still only known when you open it.
+                Image(systemName: isOpenNow ? "lock.open.fill" : "lock.fill")
+                    .foregroundStyle(isOpenNow ? Color.green : Color.secondary)
                     .frame(width: 24)
             }
             VStack(alignment: .leading, spacing: 3) {
@@ -437,10 +444,11 @@ struct VaultRow: View {
                 .help("Rename this vault")
 
                 Button(action: onOpen) {
-                    // Closed padlock: this row only ever shows a vault in its locked
-                    // state (the list never unlocks); "Open" is the action, lock.fill
-                    // the current state.
-                    Label("Open", systemImage: "lock.fill")
+                    // The icon mirrors the advisory STATE — an open padlock when the
+                    // schedule says we're in a window now, else closed; "Open" is the
+                    // action. Either way opening runs the authoritative gate and asks
+                    // for the password (the list never unlocks anything itself).
+                    Label("Open", systemImage: isOpenNow ? "lock.open.fill" : "lock.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -463,7 +471,13 @@ struct VaultRow: View {
     }
 
     @ViewBuilder private var advisory: some View {
-        if let next = nextOpening {
+        if isOpenNow {
+            // Advisory (schedule-derived). Re-entry needs the password (Model 1), so we
+            // say so; the actual unlock still runs the authoritative gate on open.
+            Label("Open now — unlock with your password", systemImage: "lock.open")
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else if let next = nextOpening {
             Label("Next window \(next.formatted(date: .abbreviated, time: .shortened))",
                   systemImage: "calendar")
                 .font(.caption)

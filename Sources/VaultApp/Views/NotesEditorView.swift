@@ -16,6 +16,8 @@ struct NotesEditorView: View {
     @EnvironmentObject private var vault: VaultModel
     @EnvironmentObject private var app: AppModel
     @State private var showSettings = false
+    /// Drives the "going back locks the vault" confirmation on the back button.
+    @State private var confirmLeave = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +34,22 @@ struct NotesEditorView: View {
         .frame(minWidth: 480, minHeight: 460)
         .sheet(isPresented: $showSettings) { SettingsView() }
         .overlay { if vault.isSealing { sealingOverlay } }
+        // Leaving with unsaved edits forces a choice (Model 1): Discard keeps the vault
+        // openable in this window but drops the edits; Save & Lock seals it forward
+        // (saved, but locked until its next window). A clean back skips this entirely.
+        .alert("Unsaved changes", isPresented: $confirmLeave) {
+            Button("Discard Changes", role: .destructive) { app.closeCurrent() }
+            Button("Save & Lock") {
+                vault.sealInteractively(trigger: .lockButton) { ok in
+                    if ok { app.closeCurrent() }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("You've edited “\(vault.label)” but haven't saved. Discard keeps it "
+                 + "openable in this window but loses your changes. Save & Lock keeps "
+                 + "them but locks the vault until its next window\(nextOpeningSuffix).")
+        }
     }
 
     /// Shown while the (networked) re-seal runs off the main thread — so leaving or
@@ -50,8 +68,13 @@ struct NotesEditorView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            // Leaving the open vault seals it first (closeCurrent re-seals off-main).
-            Button { app.closeCurrent() } label: {
+            // Model 1: going back SETS THE VAULT DOWN — it stays openable in this window
+            // and reopens with the password, so a plain back needs no warning. The only
+            // catch is UNSAVED edits: leaving drops them, so confirm first when dirty
+            // (Discard vs Save & Lock). "Lock now" is always explicit and needs no prompt.
+            Button {
+                if vault.isDirty { confirmLeave = true } else { app.closeCurrent() }
+            } label: {
                 Label("Vaults", systemImage: "chevron.left")
             }
             .buttonStyle(.borderless)
@@ -79,7 +102,7 @@ struct NotesEditorView: View {
         SectionCard(title: "Secrets", systemImage: "key.fill") {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach($vault.content.secrets) { $secret in
-                    SecretRow(secret: $secret) {
+                    SecretRow(secret: $secret, onCopy: copySecret) {
                         vault.content.secrets.removeAll { $0.id == secret.id }
                     }
                 }
@@ -98,6 +121,25 @@ struct NotesEditorView: View {
                 .frame(minHeight: 160)
         }
     }
+
+    /// Advisory "(date)" of this vault's next opening, shown in the unsaved-changes
+    /// prompt's "Save & Lock … locks it until its next window …" line — the same
+    /// schedule-derived hint the vault list shows. Empty when no upcoming opening is
+    /// known (e.g. an empty schedule), so the sentence still reads.
+    private var nextOpeningSuffix: String {
+        guard let opening = vault.nextWindowOpening else { return "" }
+        return " (\(opening.formatted(date: .abbreviated, time: .shortened)))"
+    }
+
+    /// Copy a stored secret's VALUE to the clipboard for pasting elsewhere. Per the
+    /// owner's choice the value is NOT auto-cleared — it persists until they copy
+    /// something else; SecretClipboard marks the item concealed so clipboard-history
+    /// apps skip it. We also log a secret-free note that a copy happened.
+    private func copySecret(_ value: String) {
+        guard !value.isEmpty else { return }
+        SecretClipboard.copy(value)
+        vault.recordSecretCopied()
+    }
 }
 
 /// One secret row: label + value. The value uses RevealableSecureField: masked
@@ -107,6 +149,8 @@ struct NotesEditorView: View {
 /// is per-row and resets when the view rebuilds.
 struct SecretRow: View {
     @Binding var secret: VaultSecret
+    /// Copy the current value to the clipboard (the owner supplies the write + log).
+    let onCopy: (String) -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -121,7 +165,7 @@ struct SecretRow: View {
                     .buttonStyle(.borderless)
                     .help("Remove this secret")
             }
-            RevealableSecureField(placeholder: "value", text: $secret.value)
+            RevealableSecureField(placeholder: "value", text: $secret.value, onCopy: onCopy)
         }
         .padding(10)
         .background(

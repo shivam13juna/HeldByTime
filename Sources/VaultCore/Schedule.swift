@@ -155,6 +155,25 @@ struct Schedule {
         windows.compactMap { nextOccurrence(of: $0.start, after: now) }.min()
     }
 
+    /// DISPLAY ONLY — whether `now` currently falls inside one of the daily windows,
+    /// in the schedule's time zone. Drives the home-screen "Open now" hint so a vault
+    /// set down mid-window reads as openable rather than showing its NEXT opening.
+    ///
+    /// Like `nextWindowOpening`, this NEVER authorizes access: the cryptographic gate is
+    /// the committed manifest round resolved by `VaultStore.load()` (unseal-is-the-gate),
+    /// and a schedule edited after sealing can disagree with it — this is only a hint.
+    /// A window is in progress iff its next CLOSE comes before its next OPEN, so both
+    /// ends resolve through the same `nextOccurrence` wall-clock walk and inherit its
+    /// DST / midnight-crossing handling. Start is inclusive, end exclusive.
+    func isOpenNow(at now: Date) -> Bool {
+        for window in windows {
+            guard let nextStart = nextOccurrence(of: window.start, after: now),
+                  let nextEnd = nextOccurrence(of: window.end, after: now) else { continue }
+            if nextEnd < nextStart { return true }   // closes before it next opens ⇒ open now
+        }
+        return false
+    }
+
     // MARK: - Validity floors
 
     private func isValidStart(startRound: UInt64, nowRound: UInt64, verifiedLatest: UInt64,

@@ -59,6 +59,24 @@ func runAppModelSuite() {
         }
         return cond()
     }
+    // An UNLOCKED vault model over an offline FakeSeal store, with `content` as its
+    // decrypted baseline — for the Model-1 leave/quit wiring (closeCurrent must NOT
+    // seal; the quit query surfaces only a DIRTY open vault). No Argon2 runs: the
+    // session is built directly and these checks never take a sealing path.
+    func unlockedVM(_ env: AppEnvironment, _ fake: FakeSeal, content: VaultContent) -> VaultModel {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        let schedule = Schedule(windows: [DailyWindow(start: TimeOfDay(hour: 4, minute: 0)!,
+                                                      end: TimeOfDay(hour: 5, minute: 0)!)], calendar: cal)
+        guard case .success(let entry) = env.registry.create(label: "Open") else {
+            fatalError("registry.create failed in appmodel quit setup")
+        }
+        let store = VaultStore(dir: entry.dir, client: fake, schedule: schedule)
+        let session = VaultSession(store: store, password: Array("pw".utf8),
+                                   openWindow: Manifest.Window(startRound: 1, endRound: 1_000_000_000))
+        let vm = VaultModel(entry: entry, env: env)
+        vm.applyOpenResult(.success((notes: try! content.encode(), session: session)))
+        return vm
+    }
 
     // ===== Lifecycle: bootstrap =====
 
@@ -272,20 +290,42 @@ func runAppModelSuite() {
             "applyAppearance updates uiPrefs, writes ui.json, and changes no screen/lock state")
     }
 
-    // ===== Quit =====
+    // ===== Quit / leave (Model 1: re-entry needs the password) =====
 
-    // sealForQuit is true with no open vault, and delegates to the open vault
-    // otherwise (which, not unlocked, has nothing decrypted to seal ⇒ safe).
+    // Leaving an open vault SETS IT DOWN — back to the list WITHOUT sealing forward —
+    // so it stays openable in its current window and reopens with the password. (The
+    // pre-Model-1 closeCurrent re-sealed here; this guards that regression.)
     do {
         let env = freshEnv()
         let model = AppModel(env: env)
-        let noVault = model.sealForQuit()
-        let a = makeVault(env, "V", at: 1000)
-        model.open(a)
-        let withVault = model.sealForQuit()
-        amk("sealforquit",
-            noVault == true && withVault == true,
-            "sealForQuit ⇒ true with no open vault, and delegates to the open vault (safe) otherwise")
+        let fake = FakeSeal(R: 1000)
+        let vm = unlockedVM(env, fake, content: VaultContent(notes: "stays openable", secrets: []))
+        vm.content.notes = "edited, then leaving"          // even with edits pending…
+        model.screen = .open(vm)
+        model.closeCurrent()
+        var isList = false; if case .list = model.screen { isList = true }
+        amk("close-current-sets-down-no-seal",
+            isList && fake.sealCalls == 0,
+            "leaving an open vault returns to the list WITHOUT sealing it forward (Model 1: set down, reopen with the password)")
+    }
+
+    // openVaultWithUnsavedEdits surfaces ONLY a dirty open vault — the sole case a
+    // graceful quit must warn about (a clean / absent vault is just set down, no seal).
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        amk("quit-no-open-vault-nil", model.openVaultWithUnsavedEdits == nil,
+            "no open vault ⇒ quitting seals nothing and warns about nothing")
+
+        let fake = FakeSeal(R: 1000)
+        let vm = unlockedVM(env, fake, content: VaultContent(notes: "clean", secrets: []))
+        model.screen = .open(vm)
+        amk("quit-clean-open-no-warn", model.openVaultWithUnsavedEdits == nil,
+            "a clean open vault ⇒ nothing to warn about (set down, reopens with the password)")
+
+        vm.content.notes = "now edited"
+        amk("quit-dirty-open-warns", model.openVaultWithUnsavedEdits?.id == vm.id,
+            "an open vault with unsaved edits is surfaced for the quit warning")
     }
 
     // ===== Export / Import (portable .vault bundle) =====

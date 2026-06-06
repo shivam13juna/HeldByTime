@@ -175,6 +175,32 @@ func runVaultModelSuite() {
             "decrypted-but-undecodable ⇒ .failed, never partial content")
     }
 
+    // ===== isDirty (unsaved-edits detection that drives the leave / quit prompts) =====
+
+    // Just unlocked ⇒ content equals the baseline captured at unlock ⇒ NOT dirty; an
+    // edit makes it dirty; reverting clears it; and any locked state is never dirty
+    // (nothing decrypted to have edited). Model 1 leans on this: a clean leave just
+    // sets the vault down, only unsaved edits force the discard-vs-save choice.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let want = VaultContent(notes: "baseline", secrets: [VaultSecret(label: "k", value: "v")])
+        let session = VaultSession(store: fakeStore(entry.dir, FakeSeal(R: R)),
+                                   password: password, openWindow: vmWin(R - 100, R + 100))
+        vm.applyOpenResult(.success((notes: try! want.encode(), session: session)))
+        vmk("dirty-false-right-after-unlock", vm.isDirty == false,
+            "content equals its unlock baseline ⇒ not dirty")
+        vm.content.notes = "baseline, edited"
+        vmk("dirty-true-after-edit", vm.isDirty == true, "editing the content ⇒ dirty")
+        vm.content = want
+        vmk("dirty-false-when-reverted", vm.isDirty == false,
+            "reverting to the baseline ⇒ not dirty again")
+        // A locked state is never dirty (isDirty requires .unlocked); the baseline copy
+        // is dropped on lock alongside the plaintext (next to content = VaultContent()).
+        vm.phase = .locked(LockScreen.describe(.offline, calendar: cal, now: now))
+        vmk("dirty-false-when-locked", vm.isDirty == false,
+            "any locked state ⇒ not dirty (no decrypted session to have edited)")
+    }
+
     // ===== lock() (sync re-seal; forward-only, fail-closed) =====
 
     // A successful Lock re-seals FORWARD and drops the plaintext from the model.

@@ -30,6 +30,11 @@ final class AppModel: ObservableObject {
     /// `refreshEntries()`. NEVER authorizes access — the list does not probe the
     /// real lock state (no network); opening the vault runs the authoritative gate.
     @Published var advisoryOpenings: [String: Date] = [:]
+    /// DISPLAY-ONLY advisory: the vault ids whose schedule places NOW inside a window,
+    /// so the list can show "Open now" instead of a future opening. Same caveat as
+    /// `advisoryOpenings` — schedule-derived, NEVER the authoritative lock state (a
+    /// schedule edited after sealing can disagree); opening the vault runs the real gate.
+    @Published var advisoryOpenNow: Set<String> = []
     /// App-global cosmetic appearance (light/dark), shared by every vault.
     @Published var uiPrefs: UIPrefs
     /// A newer release the notify-only check found (nil = none / dismissed). Drives
@@ -111,20 +116,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Re-read the vault directories from disk and recompute the advisory next
-    /// opening for each (wall-clock, schedule-derived — see `advisoryOpenings`).
+    /// Re-read the vault directories from disk and recompute, for each, the advisory
+    /// next opening AND the advisory "open now" flag (wall-clock, schedule-derived —
+    /// see `advisoryOpenings` / `advisoryOpenNow`; neither is the authoritative state).
     func refreshEntries() {
         entries = registry.list()
         let now = Date()
         var openings: [String: Date] = [:]
+        var openNow: Set<String> = []
         for entry in entries {
             let url = env.configuration(for: entry).schedulePrefsURL
             let prefs = (try? SchedulePrefs.load(from: url)) ?? .default
             if let next = prefs.schedule.nextWindowOpening(after: now) {
                 openings[entry.id] = next
             }
+            if prefs.schedule.isOpenNow(at: now) { openNow.insert(entry.id) }
         }
         advisoryOpenings = openings
+        advisoryOpenNow = openNow
     }
 
     // MARK: - Navigation
@@ -140,19 +149,16 @@ final class AppModel: ObservableObject {
         vm.reload()
     }
 
-    /// Leave the current vault and return to the list, sealing first if it is open.
-    /// When unlocked, the seal is networked, so it runs off the main thread (the
-    /// editor shows a "Sealing…" overlay) and we navigate once it completes — best
-    /// effort, like quit: a failed seal is closed by the launch-time / agent
-    /// defensive re-seal, never left silently unsealed.
+    /// Leave the current vault and return to the list. Model 1 (re-entry needs the
+    /// password): leaving SETS THE VAULT DOWN — drop its in-RAM session WITHOUT sealing
+    /// forward, so the on-disk blob stays openable in its CURRENT window and reopens
+    /// with the password (you are no longer locked out for the rest of the window).
+    /// Forward sealing is reserved for Lock now / window-end / quit-to-save. Unsaved
+    /// edits are resolved by the editor's "unsaved changes" prompt BEFORE this is
+    /// called, so here we simply navigate; releasing the VaultModel clears its
+    /// decrypted plaintext. An expired set-down vault is closed by the agent's
+    /// window-end trigger and the next defensive re-seal on load.
     func closeCurrent() {
-        if case .open(let vm) = screen, vm.isUnlocked {
-            vm.sealInteractively(trigger: .gracefulQuit) { [weak self] _ in
-                self?.refreshEntries()
-                self?.screen = .list
-            }
-            return
-        }
         refreshEntries()
         screen = .list
     }
@@ -345,11 +351,16 @@ final class AppModel: ObservableObject {
 
     // MARK: - Quit
 
-    /// Seal-on-graceful-quit (Cmd-Q / menu). Seals the open vault if any, then
-    /// reports it is safe to terminate.
-    func sealForQuit() -> Bool {
-        if case .open(let vm) = screen { return vm.sealForQuit() }
-        return true
+    /// The open vault that has UNSAVED edits, if any — the only case a graceful quit
+    /// (Cmd-Q / menu) must warn about. Model 1: a clean (or no) open vault is just set
+    /// down — it stays openable in its current window and reopens with the password —
+    /// so quitting seals nothing and locks no one out. Only unsaved edits force a
+    /// choice, because saving them means sealing forward (locked until the next
+    /// window). The AppKit delegate reads this to decide whether to show the warning;
+    /// the forward seal on "Save & Quit" is VaultModel.sealForQuit().
+    var openVaultWithUnsavedEdits: VaultModel? {
+        if case .open(let vm) = screen, vm.isDirty { return vm }
+        return nil
     }
 
     /// Re-check the open vault's window-end immediately. Pushed in from the AppKit

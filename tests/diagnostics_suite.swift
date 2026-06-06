@@ -58,6 +58,11 @@ func runDiagnosticsSuite() {
     check("diag/agent-removed-phrasing", log.tail().last?.contains("re-seal agent removed") == true,
           "agent uninstall must be human-readable and secret-free")
 
+    // A clipboard copy is logged as a secret-free, human-readable note (no label/value).
+    log.record(.copiedSecret, source: .app)
+    check("diag/copy-secret-phrasing", log.tail().last?.contains("copied a secret to the clipboard") == true,
+          "a clipboard copy must be recorded without the secret's label or value")
+
     // Clear empties it.
     log.clear()
     check("diag/clear", log.tail().isEmpty, "clear() removes all entries")

@@ -46,6 +46,7 @@ func runScheduleSuite() {
     multiWindowTests()
     midnightCrossingTests()
     dstTests()
+    isOpenNowTests()
     failClosedTests()
 }
 
@@ -247,6 +248,40 @@ private func dstTests() {
         sck("dst/fall-back-25h", b.startRound - a.startRound == 30000,
             "delta=\(b.startRound - a.startRound)")
     } else { sck("dst/fall-back-25h", false, "no decision") }
+}
+
+// MARK: - isOpenNow (advisory "in a window right now?" — display only, never authorization)
+
+private func isOpenNowTests() {
+    let c = cal("UTC")
+    let s = Schedule(windows: [win(4, 0, 5, 0)], calendar: c)
+
+    // Inside / on the inclusive start / just before / after / on the exclusive end.
+    sck("open-now/inside", s.isOpenNow(at: at(c, 2026, 6, 15, 4, 30)))
+    sck("open-now/at-start-inclusive", s.isOpenNow(at: at(c, 2026, 6, 15, 4, 0)))
+    sck("open-now/before-closed", !s.isOpenNow(at: at(c, 2026, 6, 15, 3, 59)))
+    sck("open-now/after-closed", !s.isOpenNow(at: at(c, 2026, 6, 15, 6, 0)))
+    sck("open-now/at-end-exclusive", !s.isOpenNow(at: at(c, 2026, 6, 15, 5, 0)))
+
+    // Midnight-crossing 23:00 → 01:00: open both sides of midnight, shut at noon.
+    let cross = Schedule(windows: [win(23, 0, 1, 0)], calendar: c)
+    sck("open-now/cross-before-midnight", cross.isOpenNow(at: at(c, 2026, 6, 15, 23, 30)))
+    sck("open-now/cross-after-midnight", cross.isOpenNow(at: at(c, 2026, 6, 16, 0, 30)))
+    sck("open-now/cross-daytime-closed", !cross.isOpenNow(at: at(c, 2026, 6, 15, 12, 0)))
+
+    // Multiple windows: being inside the SECOND one counts; between them does not.
+    let multi = Schedule(windows: [win(4, 0, 5, 0), win(20, 0, 21, 0)], calendar: c)
+    sck("open-now/second-window", multi.isOpenNow(at: at(c, 2026, 6, 15, 20, 30)))
+    sck("open-now/between-windows-closed", !multi.isOpenNow(at: at(c, 2026, 6, 15, 12, 0)))
+
+    // No windows ⇒ never open.
+    sck("open-now/no-windows", !Schedule(windows: [], calendar: c).isOpenNow(at: at(c, 2026, 6, 15, 4, 30)))
+
+    // DST spring-forward day (2026-03-08, 02:00→03:00 EDT): a 04:00–05:00 window is
+    // still correctly open at 04:30 EDT — the wall-clock walk absorbs the earlier jump.
+    let ny = cal("America/New_York")
+    sck("open-now/dst-spring-forward-open",
+        Schedule(windows: [win(4, 0, 5, 0)], calendar: ny).isOpenNow(at: at(ny, 2026, 3, 8, 4, 30)))
 }
 
 // MARK: - Fail-closed buckets

@@ -34,6 +34,11 @@ final class VaultModel: ObservableObject, Identifiable {
     @Published var phase: VaultPhase = .loading { didSet { syncWindowEndMonitor() } }
     /// The decrypted content while unlocked; bound by the editor. Cleared on lock.
     @Published var content = VaultContent()
+    /// The decrypted content AS LOADED at unlock — the baseline the editor diffs
+    /// against to know whether there are unsaved edits (`isDirty`). Held only while
+    /// unlocked and dropped alongside `content` on every lock, so no extra plaintext
+    /// copy outlives the open session (app.md §11).
+    private var loadedBaseline: VaultContent?
     /// Transient message for the unlock prompt (e.g. wrong password).
     @Published var unlockError: String?
     /// This vault's schedule (windows). Settings edits this.
@@ -210,10 +215,19 @@ final class VaultModel: ObservableObject, Identifiable {
                 phase = .failed("The vault decrypted but its contents are unreadable.")
                 return
             }
+            loadedBaseline = content        // the diff target for unsaved-edits detection
             diagnosticsLog.record(.unlock(success: true), source: .app)
             unlockError = nil
             phase = .unlocked(opened.session)
         }
+    }
+
+    /// Record (secret-free) that the user copied a secret VALUE to the clipboard —
+    /// the one action where vault plaintext deliberately crosses the app boundary.
+    /// Logs only THAT it happened (I13 / DiagnosticLog is secret-free): never the
+    /// secret's label or value.
+    func recordSecretCopied() {
+        diagnosticsLog.record(.copiedSecret, source: .app)
     }
 
     /// Re-seal the (possibly edited) content forward and return to the locked
@@ -229,6 +243,7 @@ final class VaultModel: ObservableObject, Identifiable {
         case .success(let window):
             diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
             content = VaultContent()            // drop plaintext from the model
+            loadedBaseline = nil                // …and its baseline copy
             phase = .locked(LockScreen.describe(.lockedUntil(displayStartRound: window.startRound),
                                                 calendar: schedulePrefs.calendar))
             return true
@@ -243,6 +258,18 @@ final class VaultModel: ObservableObject, Identifiable {
     var isUnlocked: Bool {
         if case .unlocked = phase { return true }
         return false
+    }
+
+    /// Whether the open editor holds changes not yet written to disk. Drives the
+    /// "unsaved changes" prompt on leaving and the graceful-quit warning. False unless
+    /// we are unlocked AND the live content differs from the baseline captured at
+    /// unlock — so a read-only open session (or any locked state) is never "dirty".
+    /// Model 1: leaving a clean vault just SETS IT DOWN (no seal) and it reopens in its
+    /// current window with the password; only unsaved edits force a discard-vs-save
+    /// choice, because saving means sealing forward (locked until the next window).
+    var isDirty: Bool {
+        guard case .unlocked = phase, let baseline = loadedBaseline else { return false }
+        return content != baseline
     }
 
     /// Interactive re-seal that runs the (networked) seal OFF the main thread so the
@@ -265,6 +292,7 @@ final class VaultModel: ObservableObject, Identifiable {
                 case .success(let window):
                     self.diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
                     self.content = VaultContent()           // drop plaintext from the model
+                    self.loadedBaseline = nil               // …and its baseline copy
                     self.phase = .locked(LockScreen.describe(.lockedUntil(displayStartRound: window.startRound),
                                                              calendar: self.schedulePrefs.calendar))
                     completion(true)
@@ -362,12 +390,14 @@ final class VaultModel: ObservableObject, Identifiable {
         case .success(let window):
             diagnosticsLog.record(.resealedForward(round: window.startRound), source: .app)
             content = VaultContent()
+            loadedBaseline = nil
             phase = .locked(LockScreen.describe(.lockedUntil(displayStartRound: window.startRound),
                                                 calendar: schedulePrefs.calendar))
             return true
         case .failure:
             diagnosticsLog.record(.resealFailed, source: .app)
             content = VaultContent()    // confirmed out-of-window ⇒ hide plaintext regardless
+            loadedBaseline = nil
             phase = .locked(LockScreen.describe(.offline, calendar: schedulePrefs.calendar))
             return false
         }

@@ -41,6 +41,7 @@ public enum DiagnosticEvent {
     case vaultExported                      // a portable (.vault) copy of this vault was written
     case vaultImported                      // this vault was reconstituted from a portable copy
     case checkedForUpdates(available: String?)  // notify-only update check ran (newer version string, or nil = up to date)
+    case copiedSecret                       // user copied a secret VALUE to the clipboard (never the label/value — secret-free)
 }
 
 /// Appends non-secret events to a small capped text file and reads them back.
@@ -149,6 +150,8 @@ public struct DiagnosticLog {
             return "imported this vault from a portable copy"
         case .checkedForUpdates(let available):
             return available.map { "checked for updates → \($0) available" } ?? "checked for updates → up to date"
+        case .copiedSecret:
+            return "copied a secret to the clipboard"
         }
     }
 

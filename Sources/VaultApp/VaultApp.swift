@@ -83,7 +83,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
-        return model.sealForQuit() ? .terminateNow : .terminateCancel
+        // Model 1: a clean (or no) open vault is just set down — it stays openable in
+        // its current window and reopens with the password — so quitting seals nothing
+        // and exits at once. ONLY unsaved edits force a choice, because saving them
+        // seals the vault forward (locking it until its next window).
+        guard let dirty = model.openVaultWithUnsavedEdits else { return .terminateNow }
+        return confirmQuitWithUnsavedEdits(dirty) ? .terminateNow : .terminateCancel
+    }
+
+    /// Warn before quitting a vault with unsaved edits. Save & Quit forward-seals it
+    /// (saved, but locked until its next window); Discard & Quit exits without sealing
+    /// (the edits are lost, but the vault stays openable in this window); Cancel stays.
+    private func confirmQuitWithUnsavedEdits(_ vm: VaultModel) -> Bool {
+        let suffix = vm.nextWindowOpening
+            .map { " (next opens \($0.formatted(date: .abbreviated, time: .shortened)))" } ?? ""
+        let alert = NSAlert()
+        alert.messageText = "Quit with unsaved changes?"
+        alert.informativeText =
+            "“\(vm.label)” has changes that aren't saved yet.\n\n"
+            + "Save & Quit locks it until its next window\(suffix). "
+            + "Discard & Quit keeps it openable in this window but loses the changes."
+        alert.addButton(withTitle: "Save & Quit")       // .alertFirstButtonReturn (default)
+        alert.addButton(withTitle: "Discard & Quit")    // .alertSecondButtonReturn
+        alert.addButton(withTitle: "Cancel")            // .alertThirdButtonReturn
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:  vm.sealForQuit(); return true   // forward-seal, then exit
+        case .alertSecondButtonReturn: return true                     // exit; edits lost, blob stays open this window
+        default:                       return false                    // Cancel: stay
+        }
     }
 
     // Closing the last window quits (and so re-seals through the path above).
@@ -160,8 +187,9 @@ struct VaultRootView: View {
         }
     }
 
-    /// Shown for every state except the open editor (which has its own header
-    /// with a "Vaults" button). Leaving an open editor seals first (closeCurrent).
+    /// Shown for every state EXCEPT the open editor (which draws its own "Vaults"
+    /// header with the dirty-aware prompt). These phases hold no decrypted session, so
+    /// returning to the list just navigates — nothing to seal or set down (Model 1).
     private var backButton: some View {
         Button { app.closeCurrent() } label: {
             Label("All vaults", systemImage: "chevron.left")

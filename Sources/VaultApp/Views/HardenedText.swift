@@ -50,7 +50,15 @@ struct RevealableSecureField: View {
     let placeholder: String
     @Binding var text: String
     var onSubmit: () -> Void = {}
+    /// When set, a copy button appears that hands the CURRENT value to this closure
+    /// (which writes the clipboard and logs the copy). Left nil for entry fields —
+    /// the unlock password and the create-vault password — where copying a
+    /// just-typed secret is meaningless; only the unlocked editor's stored secrets
+    /// opt in. Copy works whether or not the value is revealed, so the owner can
+    /// copy WITHOUT showing the cleartext on screen.
+    var onCopy: ((String) -> Void)? = nil
     @State private var revealed = false
+    @State private var justCopied = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -80,6 +88,23 @@ struct RevealableSecureField: View {
             .buttonStyle(.plain)
             .help(revealed ? "Hide" : "Show")
             .accessibilityLabel(revealed ? "Hide value" : "Show value")
+
+            // Copy the value to the clipboard. Only shown when a handler is attached
+            // AND there is something to copy. Briefly flips to a checkmark as
+            // feedback; the write itself (concealed marker, logging) is the caller's.
+            if let onCopy, !text.isEmpty {
+                Button {
+                    onCopy(text)
+                    justCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { justCopied = false }
+                } label: {
+                    Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(justCopied ? Color.green : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(justCopied ? "Copied" : "Copy to clipboard")
+                .accessibilityLabel("Copy value to clipboard")
+            }
         }
     }
 }
