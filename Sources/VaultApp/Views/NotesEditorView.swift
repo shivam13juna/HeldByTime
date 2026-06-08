@@ -16,8 +16,6 @@ struct NotesEditorView: View {
     @EnvironmentObject private var vault: VaultModel
     @EnvironmentObject private var app: AppModel
     @State private var showSettings = false
-    /// Drives the "going back locks the vault" confirmation on the back button.
-    @State private var confirmLeave = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,33 +35,22 @@ struct NotesEditorView: View {
         }
         .frame(minWidth: 480, minHeight: 460)
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .overlay { if vault.isSealing { sealingOverlay } }
-        // Leaving with unsaved edits forces a choice (Model 1): Discard keeps the vault
-        // openable in this window but drops the edits; Save & Lock seals it forward
-        // (saved, but locked until its next window). A clean back skips this entirely.
-        .alert("Unsaved changes", isPresented: $confirmLeave) {
-            Button("Discard Changes", role: .destructive) { app.closeCurrent() }
-            Button("Save & Lock") {
-                vault.sealInteractively(trigger: .lockButton) { ok in
-                    if ok { app.closeCurrent() }
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("You've edited “\(vault.label)” but haven't saved. Discard keeps it "
-                 + "openable in this window but loses your changes. Save & Lock keeps "
-                 + "them but locks the vault until its next window\(nextOpeningSuffix).")
+        .overlay {
+            if vault.isSealing { busyOverlay("Sealing the vault…") }
+            else if vault.isSettingAside { busyOverlay("Setting aside…") }
         }
     }
 
-    /// Shown while the (networked) re-seal runs off the main thread — so leaving or
-    /// locking the vault gives honest feedback instead of a frozen window.
-    private var sealingOverlay: some View {
+    /// A modal "busy" veil shown while a background operation runs off the main thread —
+    /// a networked re-seal ("Sealing the vault…") or the local set-aside key derivation
+    /// ("Setting aside…") — so leaving or locking gives honest feedback instead of a
+    /// frozen window.
+    private func busyOverlay(_ message: String) -> some View {
         ZStack {
             Color.black.opacity(0.25).ignoresSafeArea()
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Sealing the vault…").font(.callout).foregroundStyle(.secondary)
+                Text(message).font(.callout).foregroundStyle(.secondary)
             }
             .padding(28)
             .glassCard()
@@ -97,18 +84,18 @@ struct NotesEditorView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            // Model 1: going back SETS THE VAULT DOWN — it stays openable in this window
-            // and reopens with the password, so a plain back needs no warning. The only
-            // catch is UNSAVED edits: leaving drops them, so confirm first when dirty
-            // (Discard vs Save & Lock). "Lock now" is always explicit and needs no prompt.
+            // Going back SETS THE VAULT ASIDE: a clean vault is set down (it reopens this
+            // window with the password); a vault with unsaved edits has them re-locked into
+            // an in-RAM stash and sealed forward only at window-end. Either way back is
+            // safe and needs no prompt — `closeCurrent` does the dirty-vs-clean split.
             Button {
-                if vault.isDirty { confirmLeave = true } else { app.closeCurrent() }
+                app.closeCurrent()
             } label: {
                 Label("Vaults", systemImage: "chevron.left")
             }
             .buttonStyle(.borderless)
-            .disabled(vault.isSealing)
-            .help("Lock and return to your vaults")
+            .disabled(vault.isSealing || vault.isSettingAside)
+            .help("Set aside and return to your vaults (unsaved edits are kept in memory until the window ends)")
             Label(vault.label, systemImage: "lock.open.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
@@ -149,15 +136,6 @@ struct NotesEditorView: View {
             HardenedTextEditor(text: $vault.content.notes)
                 .frame(minHeight: 160)
         }
-    }
-
-    /// Advisory "(date)" of this vault's next opening, shown in the unsaved-changes
-    /// prompt's "Save & Lock … locks it until its next window …" line — the same
-    /// schedule-derived hint the vault list shows. Empty when no upcoming opening is
-    /// known (e.g. an empty schedule), so the sentence still reads.
-    private var nextOpeningSuffix: String {
-        guard let opening = vault.nextWindowOpening else { return "" }
-        return " (\(opening.formatted(date: .abbreviated, time: .shortened)))"
     }
 
     /// Copy a stored secret's VALUE to the clipboard for pasting elsewhere. Per the

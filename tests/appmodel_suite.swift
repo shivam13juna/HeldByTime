@@ -49,6 +49,19 @@ func runAppModelSuite() {
         try? Data("x".utf8).write(to: e.dir.appendingPathComponent(VaultRegistry.vaultFileName))
         return e
     }
+    // Like `makeVault` but writes a REAL VLT1 whose plaintext header carries a chosen
+    // committed window, so the advisory can read the vault's ACTUAL sealed state. The
+    // sealed payload is a dummy — the advisory reads ONLY the 30-byte header.
+    func makeSealedVault(_ env: AppEnvironment, _ label: String,
+                         startRound: UInt64, endRound: UInt64, at t: TimeInterval) -> VaultEntry {
+        guard case .success(let e) = env.registry.create(label: label, now: Date(timeIntervalSince1970: t)) else {
+            fatalError("registry.create failed in appmodel test setup")
+        }
+        let bytes = try! VLT1.encode(.init(displayStartRound: startRound, displayEndRound: endRound,
+                                           sealedPayload: [UInt8](repeating: 0, count: 16)))
+        try! Data(bytes).write(to: e.dir.appendingPathComponent(VaultRegistry.vaultFileName))
+        return e
+    }
     // Bounded wait for a background (global-queue) effect — bootstrap installs the
     // agent off the main thread, so we poll the app log until the line lands.
     func waitUntil(_ secs: Double, _ cond: () -> Bool) -> Bool {
@@ -124,6 +137,27 @@ func runAppModelSuite() {
               && model.entries.first?.id == a.id && model.entries.last?.id == b.id
               && model.advisoryOpenings[a.id] != nil && model.advisoryOpenings[b.id] != nil,
             "two sealed vaults ⇒ both listed oldest-first, each with an advisory opening")
+    }
+
+    // A vault sealed FORWARD reads CLOSED in the list advisory even though the recurring
+    // schedule still places now inside a window — the "Lock now"-inside-the-window case.
+    // The advisory is read from each vault's ACTUAL committed VLT1 window, not the schedule.
+    do {
+        let env = freshEnv()
+        let cur = TrustedTime.expectedRound(at: Date())
+        let openV = makeSealedVault(env, "Open", startRound: cur > 50 ? cur - 50 : 1,
+                                    endRound: cur + 5000, at: 1000)
+        let fwd = makeSealedVault(env, "Sealed forward", startRound: cur + 100_000,
+                                  endRound: cur + 200_000, at: 2000)
+        let model = AppModel(env: env)
+        model.refreshEntries()
+        amk("advisory-open-vault-reads-openNow", model.advisoryOpenNow.contains(openV.id),
+            "a vault whose committed window contains now reads open")
+        amk("advisory-forward-sealed-not-openNow", !model.advisoryOpenNow.contains(fwd.id),
+            "a vault sealed forward reads CLOSED even while the schedule window is open")
+        amk("advisory-forward-sealed-next-opening",
+            model.advisoryOpenings[fwd.id] == TrustedTime.date(forRound: cur + 100_000),
+            "forward-sealed next opening = committed start round")
     }
 
     // resealFireTimes unions every vault's window-END (+1 min) into the agent's
@@ -290,23 +324,44 @@ func runAppModelSuite() {
             "applyAppearance updates uiPrefs, writes ui.json, and changes no screen/lock state")
     }
 
-    // ===== Quit / leave (Model 1: re-entry needs the password) =====
+    // ===== Quit / leave (set aside in RAM; re-entry needs the password) =====
 
-    // Leaving an open vault SETS IT DOWN — back to the list WITHOUT sealing forward —
-    // so it stays openable in its current window and reopens with the password. (The
-    // pre-Model-1 closeCurrent re-sealed here; this guards that regression.)
+    // Leaving a CLEAN open vault SETS IT DOWN — back to the list WITHOUT sealing forward
+    // and WITHOUT a stash — so it stays openable this window and reopens with the
+    // password. (The pre-Model-1 closeCurrent re-sealed here; this guards that regression.)
     do {
         let env = freshEnv()
         let model = AppModel(env: env)
         let fake = FakeSeal(R: 1000)
         let vm = unlockedVM(env, fake, content: VaultContent(notes: "stays openable", secrets: []))
-        vm.content.notes = "edited, then leaving"          // even with edits pending…
         model.screen = .open(vm)
-        model.closeCurrent()
+        model.closeCurrent()                          // clean ⇒ synchronous set-down
         var isList = false; if case .list = model.screen { isList = true }
-        amk("close-current-sets-down-no-seal",
-            isList && fake.sealCalls == 0,
-            "leaving an open vault returns to the list WITHOUT sealing it forward (Model 1: set down, reopen with the password)")
+        amk("close-current-clean-sets-down-no-seal",
+            isList && fake.sealCalls == 0 && model.warmEdits.isEmpty,
+            "leaving a CLEAN open vault ⇒ list, no forward seal, no stash (set down, reopen with the password)")
+    }
+
+    // Leaving a DIRTY open vault SETS IT ASIDE — the edits are re-locked into an in-RAM
+    // stash (warmEdits) and we return to the list, but NO forward seal is written (the
+    // blob stays openable this window). The set-aside derives a key OFF the main thread,
+    // so we pump the run loop until it lands.
+    do {
+        let env = freshEnv()
+        let model = AppModel(env: env)
+        let fake = FakeSeal(R: 1000)
+        let vm = unlockedVM(env, fake, content: VaultContent(notes: "stays openable", secrets: []))
+        vm.content.notes = "edited, then leaving"     // make it dirty
+        let id = vm.id
+        model.screen = .open(vm)
+        model.closeCurrent()                          // dirty ⇒ async set-aside (RAM stash)
+        let landed = waitUntil(15) {
+            if case .list = model.screen { return model.warmEdits[id] != nil }
+            return false
+        }
+        amk("close-current-dirty-sets-aside-no-seal",
+            landed && fake.sealCalls == 0,
+            "leaving a DIRTY open vault ⇒ list with the edits stashed in warmEdits, NO forward seal")
     }
 
     // openVaultWithUnsavedEdits surfaces ONLY a dirty open vault — the sole case a
@@ -326,6 +381,80 @@ func runAppModelSuite() {
         vm.content.notes = "now edited"
         amk("quit-dirty-open-warns", model.openVaultWithUnsavedEdits?.id == vm.id,
             "an open vault with unsaved edits is surfaced for the quit warning")
+    }
+
+    // ===== Warm edits: hasUnsavedWork + quit-seal + window-end monitor =====
+
+    // A hand-built warm stash (payload = manifest || opaque bytes — defensiveReseal
+    // re-wraps it forward without EVER decrypting) over a deterministic UTC clock/round,
+    // so these paths run WITHOUT a ~1 GiB Argon2 set-aside. Each store writes into a real
+    // per-vault dir so the forward seal can persist.
+    do {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        var noon = DateComponents(); noon.year = 2026; noon.month = 6; noon.day = 1; noon.hour = 12
+        let now = cal.date(from: noon)!
+        let wR = TrustedTime.expectedRound(at: now)
+        let schedule = Schedule(windows: [DailyWindow(start: TimeOfDay(hour: 4, minute: 0)!,
+                                                      end: TimeOfDay(hour: 5, minute: 0)!)], calendar: cal)
+        func win(_ s: UInt64, _ e: UInt64) -> Manifest.Window { Manifest.Window(startRound: s, endRound: e) }
+        func warm(_ env: AppEnvironment, _ fake: FakeSeal, id: String, _ window: Manifest.Window) -> WarmStash {
+            let dir = env.vaultsRoot.appendingPathComponent(id, isDirectory: true)
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let store = VaultStore(dir: dir, client: fake, schedule: schedule, clock: { now })
+            let payload = Data(try! Manifest.encode(window) + Array("opaque-pw01-bytes".utf8))
+            return WarmStash(id: id, label: "Warm", payload: payload, openWindow: window,
+                             store: store, logURL: dir.appendingPathComponent("diag.log"))
+        }
+
+        // hasUnsavedWork / unsavedWorkCount now cover set-aside vaults (not just an open
+        // dirty editor) — the trigger for the quit warning.
+        do {
+            let env = freshEnv(); let model = AppModel(env: env)
+            amk("warm-none-initially", !model.hasUnsavedWork && model.unsavedWorkCount == 0,
+                "no editor + no stashes ⇒ nothing to warn about on quit")
+            model.warmEdits["a"] = warm(env, FakeSeal(R: wR), id: "a", win(wR - 100, wR + 100))
+            model.warmEdits["b"] = warm(env, FakeSeal(R: wR), id: "b", win(wR - 100, wR + 100))
+            amk("warm-counts-stashes", model.hasUnsavedWork && model.unsavedWorkCount == 2,
+                "two set-aside vaults ⇒ hasUnsavedWork, count 2")
+        }
+
+        // sealAllForQuit forward-seals every warm stash and empties warmEdits ⇒ true.
+        do {
+            let env = freshEnv(); let model = AppModel(env: env)
+            let fake = FakeSeal(R: wR)
+            model.warmEdits["a"] = warm(env, fake, id: "a", win(wR - 100, wR + 100))
+            let ok = model.sealAllForQuit()
+            amk("warm-sealall-success", ok && model.warmEdits.isEmpty && fake.sealCalls == 1,
+                "Seal & Quit ⇒ each warm stash sealed forward, warmEdits emptied, returns true")
+        }
+
+        // sealAllForQuit OFFLINE ⇒ false, and the unsealed stash STAYS in RAM (so the
+        // caller cancels the quit and nothing is silently lost).
+        do {
+            let env = freshEnv(); let model = AppModel(env: env)
+            let fake = FakeSeal(R: wR); fake.offline = true
+            model.warmEdits["a"] = warm(env, fake, id: "a", win(wR - 100, wR + 100))
+            let ok = model.sealAllForQuit()
+            amk("warm-sealall-offline-false",
+                ok == false && model.warmEdits["a"] != nil && fake.sealCalls == 0,
+                "offline Seal & Quit ⇒ false, stash kept in RAM (caller must cancel the quit)")
+        }
+
+        // The window-end monitor seals a stash whose window has ENDED (verified round past
+        // endRound) and leaves an in-window one untouched.
+        do {
+            let env = freshEnv(); let model = AppModel(env: env)
+            let expiredFake = FakeSeal(R: wR)
+            model.warmEdits["done"] = warm(env, expiredFake, id: "done", win(wR - 200, wR - 100))
+            let liveFake = FakeSeal(R: wR)
+            model.warmEdits["live"] = warm(env, liveFake, id: "live", win(wR - 100, wR + 100))
+            model.pollWarmStashes()
+            let settled = waitUntil(15) { model.warmEdits["done"] == nil }
+            amk("warm-monitor-seals-expired-keeps-live",
+                settled && model.warmEdits["live"] != nil
+                  && expiredFake.sealCalls == 1 && liveFake.sealCalls == 0,
+                "window-end monitor seals an EXPIRED stash forward and leaves an in-window one untouched")
+        }
     }
 
     // ===== Export / Import (portable .vault bundle) =====

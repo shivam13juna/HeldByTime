@@ -21,6 +21,21 @@ enum AppScreen {
     case failed(String)             // app-level wiring error
 }
 
+/// One vault's unsaved edits, re-locked into an in-RAM ciphertext stash because the user
+/// LEFT it mid-window. Held off-screen until the user re-enters (decrypt the stash with
+/// the password) or the window ends (seal it forward, passwordless). RAM-only on purpose —
+/// a password-openable blob written to disk mid-window would be exactly the escape hatch
+/// §9 / I13 forbid — so it is lost if the app exits before it is sealed (the accepted
+/// trade for not locking the vault forward the instant you step away).
+struct WarmStash {
+    let id: String                   // the vault's stable id (the warmEdits key)
+    let label: String                // non-secret display label, for the window-end log line
+    let payload: Data                // manifest(openWindow) || PW01 — re-entry + defensiveReseal both consume it
+    let openWindow: Manifest.Window  // the window the edits belong to (a round past its end ⇒ seal forward)
+    let store: VaultStore            // captured from the live session (carries the helper client + schedule + clock)
+    let logURL: URL                  // this vault's secret-free diagnostics log (the vm is gone by window-end)
+}
+
 final class AppModel: ObservableObject {
     @Published var screen: AppScreen = .launching
     /// The vaults currently on disk (sealed). Drives the list; refreshed on change.
@@ -40,6 +55,19 @@ final class AppModel: ObservableObject {
     /// A newer release the notify-only check found (nil = none / dismissed). Drives
     /// the home-screen banner. NEVER authorizes anything — purely informational.
     @Published var availableUpdate: AvailableUpdate?
+    /// Vaults LEFT mid-window with unsaved edits, keyed by id — their edits re-locked into
+    /// an in-RAM stash (see `WarmStash`) instead of forcing a discard/seal choice on
+    /// "back". Drives the list's "kept in memory" badge. A warm vault re-opens to its
+    /// newer in-RAM edits (with the password) and seals forward at its window-end.
+    @Published var warmEdits: [String: WarmStash] = [:]
+
+    /// 60s heartbeat that seals EXPIRED warm stashes forward (passwordless), armed only
+    /// while `warmEdits` is non-empty. Foundation Timer only — no AppKit — so a missed
+    /// tick (e.g. the Mac asleep) just seals on the next tick or at next launch (the
+    /// background agent also re-seals expired vaults).
+    private var warmMonitorTimer: Timer?
+    private var warmPollInFlight = false
+    static let warmPollInterval: TimeInterval = 60
 
     let env: AppEnvironment
     /// Performs the one outbound update request (injected so tests use a stub).
@@ -117,28 +145,57 @@ final class AppModel: ObservableObject {
     }
 
     /// Re-read the vault directories from disk and recompute, for each, the advisory
-    /// next opening AND the advisory "open now" flag (wall-clock, schedule-derived —
-    /// see `advisoryOpenings` / `advisoryOpenNow`; neither is the authoritative state).
+    /// next opening AND the advisory "open now" flag. DISPLAY ONLY — never the
+    /// authoritative state (opening runs the real gate). "Open now" is read from each
+    /// vault's OWN committed window (the plaintext VLT1 header of its on-disk copies),
+    /// not the recurring schedule, so a vault sealed forward — "Lock now", the re-seal
+    /// agent, or a prior session — correctly reads closed even while the schedule still
+    /// places now inside a window. The schedule only forecasts the next opening when the
+    /// vault itself can't (expired / unreadable). The VLT1 rounds stay untrusted (I2/I3).
     func refreshEntries() {
         entries = registry.list()
         let now = Date()
+        let current = TrustedTime.expectedRound(at: now)
         var openings: [String: Date] = [:]
         var openNow: Set<String> = []
         for entry in entries {
-            let url = env.configuration(for: entry).schedulePrefsURL
-            let prefs = (try? SchedulePrefs.load(from: url)) ?? .default
-            if let next = prefs.schedule.nextWindowOpening(after: now) {
-                openings[entry.id] = next
-            }
-            if prefs.schedule.isOpenNow(at: now) { openNow.insert(entry.id) }
+            let config = env.configuration(for: entry)
+            let prefs = (try? SchedulePrefs.load(from: config.schedulePrefsURL)) ?? .default
+            let advisory = VaultAdvisor.advise(copies: Self.peekVaultWindows(config),
+                                               current: current, schedule: prefs.schedule, now: now)
+            if advisory.isOpenNow { openNow.insert(entry.id) }
+            if let next = advisory.nextOpening { openings[entry.id] = next }
         }
         advisoryOpenings = openings
         advisoryOpenNow = openNow
     }
 
+    /// Peek the plaintext VLT1 display-round pair from each readable on-disk copy of a
+    /// vault (primary + `.bak`) — a 30-byte header read per copy, never the sealed
+    /// payload. Feeds the DISPLAY-ONLY advisory above; the rounds are untrusted (I2/I3)
+    /// and never authorize access. Unreadable / non-VLT1 copies are simply omitted.
+    private static func peekVaultWindows(_ config: AppConfiguration) -> [(start: UInt64, end: UInt64)] {
+        [config.vaultPrimaryURL, config.vaultBackupURL].compactMap {
+            Self.readHeaderPrefix($0, count: VLT1.headerLen).flatMap(VLT1.peekDisplayRounds)
+        }
+    }
+
+    /// Read at most the first `count` bytes of a file (a VLT1 header), or nil if it
+    /// can't be read or is shorter. Best-effort: a vault.dat mid atomic-replace reads
+    /// as either the whole old or the whole new file (rename is atomic) — both valid.
+    private static func readHeaderPrefix(_ url: URL, count: Int) -> [UInt8]? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        guard let data = try? fh.read(upToCount: count), data.count >= count else { return nil }
+        return [UInt8](data)
+    }
+
     // MARK: - Navigation
 
-    /// Open an existing vault: build its model and run the load state-machine.
+    /// Open an existing vault: build its model and run the load state-machine. If the
+    /// vault was left this window with unsaved edits (a warm stash), re-entry PREFERS the
+    /// newer in-RAM edits over disk — and the warm copy is dropped once it becomes a live
+    /// on-screen session (which re-stashes on its own leave).
     func open(_ entry: VaultEntry) {
         // The vault signals schedule edits back up so we can refresh the agent's
         // window-end triggers immediately (a schedule change must not wait for the
@@ -146,30 +203,112 @@ final class AppModel: ObservableObject {
         let vm = VaultModel(entry: entry, env: env,
                             onScheduleChanged: { [weak self] in self?.refreshResealSchedule() })
         screen = .open(vm)
-        vm.reload()
+        if let warm = warmEdits[entry.id] {
+            vm.onUnlockedFromStash = { [weak self] in
+                self?.warmEdits.removeValue(forKey: entry.id)
+                self?.syncWarmMonitor()
+            }
+            vm.reload(preferringStash: warm.payload)
+        } else {
+            vm.reload()
+        }
     }
 
-    /// Leave the current vault and return to the list. Model 1 (re-entry needs the
-    /// password): leaving SETS THE VAULT DOWN — drop its in-RAM session WITHOUT sealing
-    /// forward, so the on-disk blob stays openable in its CURRENT window and reopens
-    /// with the password (you are no longer locked out for the rest of the window).
-    /// Forward sealing is reserved for Lock now / window-end / quit-to-save. Unsaved
-    /// edits are resolved by the editor's "unsaved changes" prompt BEFORE this is
-    /// called, so here we simply navigate; releasing the VaultModel clears its
-    /// decrypted plaintext. An expired set-down vault is closed by the agent's
-    /// window-end trigger and the next defensive re-seal on load.
+    /// Leave the current vault and return to the list. If it holds unsaved edits, those
+    /// are SET ASIDE — re-locked into an in-RAM ciphertext stash (see `WarmStash`) so the
+    /// user can re-open this window with the password and the edits seal forward only at
+    /// window-end — instead of forcing a discard-or-seal choice. A clean (or non-unlocked)
+    /// vault is just SET DOWN: drop its in-RAM session WITHOUT sealing, so the on-disk blob
+    /// stays openable this window and reopens with the password. Forward sealing stays
+    /// reserved for Lock now / window-end / quit-to-save.
     func closeCurrent() {
-        // Capture the vault being left BEFORE we navigate, so we can tear it down once
-        // it's off screen.
-        let leaving: VaultModel?
-        if case .open(let vm) = screen { leaving = vm } else { leaving = nil }
+        guard case .open(let vm) = screen else { screen = .list; return }
+        // Unsaved edits → re-lock them into an in-RAM stash (async ~1s key derivation; the
+        // editor shows "Setting aside…"). On failure (over-cap notes) the editor STAYS
+        // with sealError shown, so the edits are never silently lost.
+        guard vm.isDirty, case .unlocked(let session) = vm.phase else {
+            setDownAndShowList(vm)
+            return
+        }
+        let id = vm.id, label = vm.label
+        let store = session.store, window = session.openWindow
+        let logURL = vm.config.diagnosticsLogURL
+        vm.prepareSetAside { [weak self] payload in
+            guard let self, let payload else { return }
+            self.warmEdits[id] = WarmStash(id: id, label: label, payload: payload,
+                                           openWindow: window, store: store, logURL: logURL)
+            self.syncWarmMonitor()
+            self.setDownAndShowList(vm)
+        }
+    }
+
+    /// Navigate to the list and tear `vm` down (zero its plaintext, stop its window-end
+    /// timer). Shared by the clean-leave and post-set-aside paths; the stash, if any, is
+    /// already captured into `warmEdits` before this runs.
+    private func setDownAndShowList(_ vm: VaultModel) {
         refreshEntries()
-        screen = .list                 // unmount the editor first…
-        leaving?.setDown()             // …then synchronously zero its plaintext and stop
-                                       // its window-end monitor (no seal — the on-disk blob
-                                       // stays openable this window and reopens with the
-                                       // password). `leaving` is the last reference, so the
-                                       // model is released as soon as this returns.
+        screen = .list
+        vm.setDown()
+    }
+
+    // MARK: - Warm edits (set aside in RAM)
+
+    /// Arm the warm-stash heartbeat exactly while there are warm stashes; stop it when
+    /// none remain. Called after every change to `warmEdits`.
+    private func syncWarmMonitor() {
+        if warmEdits.isEmpty {
+            warmMonitorTimer?.invalidate(); warmMonitorTimer = nil
+        } else if warmMonitorTimer == nil {
+            // `.common` mode so it keeps firing during menu tracking / scrolling.
+            let timer = Timer(timeInterval: Self.warmPollInterval, repeats: true) { [weak self] _ in
+                self?.pollWarmStashes()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            warmMonitorTimer = timer
+        }
+    }
+
+    /// One heartbeat: for every OFF-SCREEN warm stash, fetch the verified round and, when
+    /// it is strictly past the stash's committed window end, seal the stash FORWARD
+    /// without the password — reusing `VaultStore.defensiveReseal`, so the PW01 bytes ride
+    /// verbatim and only the committed window moves forward (I8 anti-shortening intact).
+    /// The on-screen vault is skipped (its own session owns its window-end). Offline or
+    /// still-in-window stashes are left for a later tick — the stash is ciphertext, safe to
+    /// hold. All network + writes happen off the main thread. Internal (not private) so
+    /// the headless suite can drive one heartbeat with a controlled fake round.
+    func pollWarmStashes() {
+        guard !warmPollInFlight, !warmEdits.isEmpty else { return }
+        warmPollInFlight = true
+        let onScreen = currentOpenVaultId
+        let candidates = warmEdits.filter { $0.key != onScreen }
+        DispatchQueue.global(qos: .utility).async {
+            var sealed: [(id: String, round: UInt64, logURL: URL)] = []
+            for (id, stash) in candidates {
+                guard case .success(let info) = stash.store.client.currentRound(),
+                      !TrustedTime.isStale(verifiedLatest: info.round, now: stash.store.clock()),
+                      info.round > stash.openWindow.endRound else { continue }
+                if case .success(let w) = stash.store.defensiveReseal(unsealedPayload: stash.payload,
+                                                                      verifiedLatest: info.round) {
+                    sealed.append((id, w.startRound, stash.logURL))
+                }
+            }
+            DispatchQueue.main.async {
+                self.warmPollInFlight = false
+                for s in sealed {
+                    self.warmEdits.removeValue(forKey: s.id)
+                    DiagnosticLog(url: s.logURL).record(.resealedForward(round: s.round), source: .app)
+                }
+                if !sealed.isEmpty { self.refreshEntries() }
+                self.syncWarmMonitor()
+            }
+        }
+    }
+
+    /// The id of the vault currently on screen, if any — skipped by the warm monitor so it
+    /// never races the on-screen session over the same vault.
+    private var currentOpenVaultId: String? {
+        if case .open(let vm) = screen { return vm.id }
+        return nil
     }
 
     // MARK: - Create
@@ -226,6 +365,8 @@ final class AppModel: ObservableObject {
     func deleteVault(_ entry: VaultEntry) {
         _ = registry.delete(id: entry.id)
         if case .open(let vm) = screen, vm.id == entry.id { screen = .list }
+        warmEdits.removeValue(forKey: entry.id)   // a deleted vault has no stash to seal
+        syncWarmMonitor()
         refreshEntries()
         refreshResealSchedule()        // drop the removed vault's window-end trigger
     }
@@ -370,6 +511,42 @@ final class AppModel: ObservableObject {
     var openVaultWithUnsavedEdits: VaultModel? {
         if case .open(let vm) = screen, vm.isDirty { return vm }
         return nil
+    }
+
+    /// Whether a graceful quit (Cmd-Q / menu) must warn: there are unsaved IN-MEMORY edits
+    /// — an open dirty editor AND/OR one or more vaults SET ASIDE this window (warmEdits).
+    /// All of it is sealed to disk only at window-end, so quitting would otherwise lose it.
+    var hasUnsavedWork: Bool { openVaultWithUnsavedEdits != nil || !warmEdits.isEmpty }
+
+    /// How many distinct vaults hold unsaved in-memory edits (the open dirty editor, if
+    /// any, plus every set-aside vault) — drives the quit warning's singular/plural copy.
+    var unsavedWorkCount: Int { (openVaultWithUnsavedEdits != nil ? 1 : 0) + warmEdits.count }
+
+    /// Forward-seal EVERY piece of in-RAM work for a graceful quit (the option-1 "Seal &
+    /// Quit"): the open dirty session (if any) and every warm stash. Each becomes locked
+    /// until its next window. SYNCHRONOUS — the AppKit terminate reply can't await — so it
+    /// reaches the network on the main thread exactly like the existing Cmd-Q seal. Returns
+    /// true ONLY if EVERYTHING persisted; false if any couldn't (e.g. offline), in which
+    /// case the ones that DID seal are gone from `warmEdits` and the rest stay in RAM
+    /// intact — the caller must then CANCEL the quit so nothing is silently lost. Warm
+    /// stashes seal PASSWORDLESSLY (reusing defensiveReseal — the PW01 rides verbatim, only
+    /// the window moves forward, I8-clean).
+    func sealAllForQuit() -> Bool {
+        var allSealed = true
+        if let vm = openVaultWithUnsavedEdits, !vm.sealForQuit() { allSealed = false }
+        for (id, stash) in Array(warmEdits) {
+            guard case .success(let info) = stash.store.client.currentRound(),
+                  !TrustedTime.isStale(verifiedLatest: info.round, now: stash.store.clock()),
+                  case .success(let w) = stash.store.defensiveReseal(unsealedPayload: stash.payload,
+                                                                     verifiedLatest: info.round) else {
+                allSealed = false
+                continue
+            }
+            DiagnosticLog(url: stash.logURL).record(.resealedForward(round: w.startRound), source: .app)
+            warmEdits.removeValue(forKey: id)
+        }
+        syncWarmMonitor()
+        return allSealed
     }
 
     /// Re-check the open vault's window-end immediately. Pushed in from the AppKit

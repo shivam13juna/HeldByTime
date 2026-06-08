@@ -187,4 +187,70 @@ func runSessionSuite() {
         }
         ssk("reseal/no-window-fails-closed", schedFailed && fake.sealCalls == 0)
     }
+
+    // 4. makeSetAsidePayload(): the DETACHED in-RAM re-lock used when leaving a vault
+    //    with unsaved edits. The bytes are byte-identical to an open-window payload,
+    //    so they (a) round-trip back through open() with the password and (b) seal
+    //    forward PASSWORDLESSLY through defensiveReseal — the two reuse paths the app
+    //    relies on (re-entry, and the at-window-end commit). No write, no network.
+    do {
+        let (store, fake, dir) = freshStore(); defer { cleanup(dir) }
+        let win = sWin(R - 100, R + 100)
+        let session = VaultSession(store: store, password: password, openWindow: win)
+
+        guard case .success(let stash) = session.makeSetAsidePayload(notes: notes2) else {
+            ssk("setaside/produces-payload", false); return
+        }
+        ssk("setaside/produces-payload", true)
+
+        // Shape: manifest(openWindow) || PW01 — the first 54 bytes ARE the committed
+        // window, which is why open() and defensiveReseal both consume it unchanged.
+        let manifestBytes = Array([UInt8](stash)[0..<Manifest.length])
+        ssk("setaside/prefixed-with-window", (try? Manifest.decode(manifestBytes)) == win)
+
+        // Making it touched neither disk nor the time-lock network (RAM-only).
+        ssk("setaside/no-disk-write", (try? Data(contentsOf: store.primaryURL)) == nil)
+        ssk("setaside/no-seal-call", fake.sealCalls == 0)
+
+        // Re-entry reuses open() verbatim: the right password recovers the EDITED notes…
+        switch VaultSession.open(store: store, window: win, payload: stash, password: password) {
+        case .success(let (notes, _)): ssk("setaside/reopens-with-password", notes == notes2)
+        case .failure: ssk("setaside/reopens-with-password", false)
+        }
+        // …and a wrong password fails closed with no plaintext.
+        switch VaultSession.open(store: store, window: win, payload: stash, password: Array("nope".utf8)) {
+        case .failure(.format(.authError)): ssk("setaside/wrong-password-fails-closed", true)
+        default: ssk("setaside/wrong-password-fails-closed", false)
+        }
+
+        // Window-end commit reuses defensiveReseal verbatim (passwordless): the stash
+        // seals to a strictly FUTURE window, then re-opens there with the SAME password,
+        // recovering the edits — exactly the at-expiry path, I8-clean.
+        switch store.defensiveReseal(unsealedPayload: stash, verifiedLatest: R) {
+        case .success(let w):
+            ssk("setaside/seals-forward", w.startRound > R && fake.sealCalls == 1)
+            fake.R = w.startRound
+            guard case .openWindow(let w2, let payload2) = store.load().result, w2 == w else {
+                ssk("setaside/forward-reopens", false); return
+            }
+            ssk("setaside/forward-reopens", true)
+            switch VaultSession.open(store: store, window: w2, payload: payload2, password: password) {
+            case .success(let (notes, _)): ssk("setaside/forward-recovers-edits", notes == notes2)
+            case .failure: ssk("setaside/forward-recovers-edits", false)
+            }
+        case .failure:
+            ssk("setaside/seals-forward", false)
+        }
+    }
+
+    // 4b. Over-cap notes can't be set aside: fail-closed, no payload (and no ~1 GiB
+    //     key derivation — encode rejects the size first).
+    do {
+        let (store, _, dir) = freshStore(); defer { cleanup(dir) }
+        let session = VaultSession(store: store, password: password, openWindow: sWin(R - 100, R + 100))
+        let huge = [UInt8](repeating: 0x41, count: VaultConstants.MAX_PLAINTEXT_NOTES_BYTES + 1)
+        var rejected = false
+        if case .failure = session.makeSetAsidePayload(notes: huge) { rejected = true }
+        ssk("setaside/over-cap-fails-closed", rejected)
+    }
 }

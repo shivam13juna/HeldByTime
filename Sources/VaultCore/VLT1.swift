@@ -58,4 +58,22 @@ enum VLT1 {
         let payload = try r.take(Int(plen))
         return Container(displayStartRound: ds, displayEndRound: de, sealedPayload: payload)
     }
+
+    /// DISPLAY-ONLY peek of the two plaintext display rounds, reading ONLY the fixed
+    /// 30-byte header — never the (up to 2 MiB) sealed payload. The list advisory uses
+    /// this so a vault's row reflects its ACTUAL committed window from a 30-byte read.
+    /// Returns nil for anything that is not a well-formed VLT1 header. Like `decode`,
+    /// these rounds are UNTRUSTED hints and NEVER an access decision (I2/I3) — the gate
+    /// is always the unseal.
+    static func peekDisplayRounds(_ header: [UInt8]) -> (start: UInt64, end: UInt64)? {
+        guard header.count >= headerLen else { return nil }
+        var r = ByteReader(header)
+        guard let magic = try? r.take(4), magic == Array(VaultConstants.VLT1_MAGIC.utf8),
+              let version = try? r.u8(), Int(version) == VaultConstants.VAULT_FORMAT_VERSION,
+              let flags = try? r.u8(), flags == 0,
+              let ds = try? r.u64le(), let de = try? r.u64le() else {
+            return nil
+        }
+        return (ds, de)
+    }
 }

@@ -83,37 +83,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
-        // Model 1: a clean (or no) open vault is just set down — it stays openable in
-        // its current window and reopens with the password — so quitting seals nothing
-        // and exits at once. ONLY unsaved edits force a choice, because saving them
-        // seals the vault forward (locking it until its next window).
-        guard let dirty = model.openVaultWithUnsavedEdits else { return .terminateNow }
-        return confirmQuitWithUnsavedEdits(dirty) ? .terminateNow : .terminateCancel
+        // A clean (or no) open vault is just set down — it stays openable this window and
+        // reopens with the password — so quitting it seals nothing and exits at once. We
+        // warn ONLY when there are unsaved IN-MEMORY edits: an open dirty editor and/or
+        // vaults set aside this window (warmEdits), all of which seal to disk only at
+        // window-end, so quitting would otherwise lose them.
+        guard model.hasUnsavedWork else { return .terminateNow }
+        return confirmQuitWithUnsavedWork(model) ? .terminateNow : .terminateCancel
     }
 
-    /// Warn before quitting a vault with unsaved edits. Save & Quit forward-seals it
-    /// (saved, but locked until its next window); Discard & Quit exits without sealing
-    /// (the edits are lost, but the vault stays openable in this window); Cancel stays.
-    private func confirmQuitWithUnsavedEdits(_ vm: VaultModel) -> Bool {
-        let suffix = vm.nextWindowOpening
-            .map { " (next opens \($0.formatted(date: .abbreviated, time: .shortened)))" } ?? ""
+    /// Warn before quitting with unsaved IN-MEMORY edits — an open dirty editor and/or any
+    /// vaults set aside this window. Seal & Quit forward-seals ALL of them (each saved, but
+    /// locked until its next window) and exits only if every one persisted; if any can't
+    /// (e.g. offline) the quit is CANCELLED so nothing is lost. Discard & Quit exits,
+    /// losing the in-memory edits (each vault keeps its last-sealed contents, still openable
+    /// this window). Cancel stays.
+    private func confirmQuitWithUnsavedWork(_ model: AppModel) -> Bool {
+        let n = model.unsavedWorkCount
         let alert = NSAlert()
         alert.messageText = "Quit with unsaved changes?"
         alert.informativeText =
-            "“\(vm.label)” has changes that aren't saved yet.\n\n"
-            + "Save & Quit locks it until its next window\(suffix). "
-            + "Discard & Quit keeps it openable in this window but loses the changes."
-        alert.addButton(withTitle: "Save & Quit")       // .alertFirstButtonReturn (default)
+            "\(n == 1 ? "A vault has" : "\(n) vaults have") edits kept in memory that "
+            + "aren't sealed yet.\n\n"
+            + "Seal & Quit locks \(n == 1 ? "it" : "them") until the next window. "
+            + "Discard & Quit keeps \(n == 1 ? "it" : "them") openable this window but loses "
+            + "the in-memory edits."
+        alert.addButton(withTitle: "Seal & Quit")       // .alertFirstButtonReturn (default)
         alert.addButton(withTitle: "Discard & Quit")    // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")            // .alertThirdButtonReturn
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            // Save & Quit: exit ONLY if the forward seal actually persisted the edits. If
-            // it couldn't (e.g. offline), DON'T quit — keep the session open with the edits
-            // intact; the editor shows vm.sealError so the failure is never silent.
-            return vm.sealForQuit()
+            // Seal & Quit: exit ONLY if EVERY piece of in-memory work persisted. If any
+            // couldn't (offline), DON'T quit — the unsealed edits stay in RAM and the
+            // editor / list still show them, so the failure is never a silent loss.
+            return model.sealAllForQuit()
         case .alertSecondButtonReturn:
-            return true                     // Discard & Quit: exit; edits lost, blob stays open this window
+            return true                     // Discard & Quit: exit; in-memory edits lost, blobs stay openable this window
         default:
             return false                    // Cancel: stay
         }

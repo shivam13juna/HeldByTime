@@ -201,6 +201,56 @@ func runVaultModelSuite() {
             "any locked state ⇒ not dirty (no decrypted session to have edited)")
     }
 
+    // ===== set aside / re-entry (in-RAM stash substitution + reentered-dirty) =====
+
+    // applyLoadResult: with a pending re-entry stash, an open-window load whose window
+    // MATCHES the stash's leading manifest ⇒ the prompt is fed the STASH payload (the
+    // newer in-RAM edits), not the on-disk one, and reenteredFromStash is set so leaving
+    // re-stashes rather than dropping the edits.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let win = vmWin(R - 100, R + 100)
+        let stash = Data(try! Manifest.encode(win) + Array("stash-pw01".utf8))
+        vm.pendingStash = stash
+        vm.applyLoadResult(.openWindow(window: win, payload: Data("on-disk-different".utf8)))
+        var prompted = false; var usedStash = false
+        if case let .unlockPrompt(w, p) = vm.phase { prompted = (w == win); usedStash = (p == stash) }
+        vmk("reentry-prefers-stash-payload",
+            prompted && usedStash && vm.reenteredFromStash && vm.pendingStash == nil,
+            "open-window load + matching pending stash ⇒ prompt carries the stash, reentered flag set")
+    }
+
+    // applyLoadResult: a pending stash that does NOT resolve to an open window (here the
+    // load is locked) is DROPPED unused — phase maps normally and reenteredFromStash stays
+    // false; AppModel still holds the authoritative warm copy to seal forward (fail-closed,
+    // a stash is never decrypted outside its window).
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        vm.pendingStash = Data(try! Manifest.encode(vmWin(R - 100, R + 100)) + Array("stash".utf8))
+        vm.applyLoadResult(.lockedUntil(displayStartRound: R + 5000))
+        var locked = false; if case .locked = vm.phase { locked = true }
+        vmk("reentry-stash-dropped-when-not-open",
+            locked && vm.reenteredFromStash == false && vm.pendingStash == nil,
+            "a non-open load drops the pending stash unused (reentered flag stays false)")
+    }
+
+    // A session RE-ENTERED from a stash is dirty even with NO further edit (its content is
+    // already newer than disk), so leaving re-stashes the edits instead of losing them —
+    // and unlocking it drops AppModel's now-redundant warm copy.
+    do {
+        let entry = freshEntry(); let vm = VaultModel(entry: entry, env: env)
+        let want = VaultContent(notes: "from the stash", secrets: [])
+        let session = VaultSession(store: fakeStore(entry.dir, FakeSeal(R: R)),
+                                   password: password, openWindow: vmWin(R - 100, R + 100))
+        var droppedWarm = false
+        vm.reenteredFromStash = true                  // as applyLoadResult would have set
+        vm.onUnlockedFromStash = { droppedWarm = true }
+        vm.applyOpenResult(.success((notes: try! want.encode(), session: session)))
+        vmk("reentered-session-dirty-and-drops-warm",
+            vm.isDirty && droppedWarm && vm.content == want,
+            "unlocking a stash session ⇒ dirty with no edit (re-stashes on leave) + warm copy dropped")
+    }
+
     // ===== lock() (sync re-seal; forward-only, fail-closed) =====
 
     // A successful Lock re-seals FORWARD and drops the plaintext from the model.

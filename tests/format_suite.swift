@@ -100,6 +100,20 @@ func runFormatSuite() {
         var over = Array(v[0..<VLT1.headerLen])
         for i in 22..<30 { over[i] = 0xff }
         et("vlt1-oversize-len", "sizeLimit") { _ = try VLT1.decode(over) }
+
+        // peekDisplayRounds: the list advisory reads the two display rounds from the
+        // 30-byte header ALONE (never the sealed payload), and rejects non-headers.
+        let hdr = Array(v[0..<VLT1.headerLen])
+        ck("vlt1-peek-matches-decode",
+           VLT1.peekDisplayRounds(hdr).map { [$0.start, $0.end] } == [5, 9])
+        ck("vlt1-peek-header-only-suffices", VLT1.peekDisplayRounds(hdr) != nil)
+        ck("vlt1-peek-too-short", VLT1.peekDisplayRounds(Array(v[0..<(VLT1.headerLen - 1)])) == nil)
+        var pbm = hdr; pbm[0] = 0x00
+        ck("vlt1-peek-bad-magic", VLT1.peekDisplayRounds(pbm) == nil)
+        var pbv = hdr; pbv[4] = 9
+        ck("vlt1-peek-bad-version", VLT1.peekDisplayRounds(pbv) == nil)
+        var pbf = hdr; pbf[5] = 1
+        ck("vlt1-peek-bad-flags", VLT1.peekDisplayRounds(pbf) == nil)
     } catch { fail("format/vlt1-setup", "\(error)") }
 
     et("bytereader-overrun", "parseError") {

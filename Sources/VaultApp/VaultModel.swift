@@ -39,6 +39,22 @@ final class VaultModel: ObservableObject, Identifiable {
     /// unlocked and dropped alongside `content` on every lock, so no extra plaintext
     /// copy outlives the open session (app.md §11).
     private var loadedBaseline: VaultContent?
+    /// The in-RAM stash payload to PREFER on the next load — set by AppModel when
+    /// re-entering a vault left with unsaved edits this window. `reload()` honours it
+    /// ONLY when load() independently confirms the matching open window (see
+    /// `applyLoadResult`); otherwise it is dropped unused (AppModel keeps the
+    /// authoritative warm copy). nil for an ordinary open. Internal for the headless
+    /// reducer tests.
+    var pendingStash: Data?
+    /// True once a live session was RE-ENTERED from an in-RAM stash — i.e. its content is
+    /// newer than what is sealed on disk. OR'd into `isDirty` so LEAVING again re-stashes
+    /// the edits even with no further change (a clean "back" would otherwise set the vault
+    /// down and lose them). Reset on every fresh load and on set-down. Internal for tests.
+    var reenteredFromStash = false
+    /// Invoked once the editor is re-entered from a stash AND unlocked, so AppModel can
+    /// drop its now-redundant warm copy (the live session owns the edits and re-stashes on
+    /// leave). No-op for an ordinary open.
+    var onUnlockedFromStash: (() -> Void)?
     /// Transient message for the unlock prompt (e.g. wrong password).
     @Published var unlockError: String?
     /// Transient message shown IN THE EDITOR when a re-seal (Lock now / Save & Lock /
@@ -58,6 +74,11 @@ final class VaultModel: ObservableObject, Identifiable {
     /// NEITHER affects the lock decision — they are display/concurrency state only.
     @Published var isUnlocking = false
     @Published var isSealing = false
+    /// True while a leave-with-edits "set aside" runs its ~1s key derivation off the
+    /// main thread — re-locking the edits into an in-RAM stash. A SEPARATE flag from
+    /// `isSealing` because we are NOT sealing forward (nothing is written, no network);
+    /// it just drives an honest "Setting aside…" overlay and guards re-entrant taps.
+    @Published var isSettingAside = false
     /// Re-entrancy guard for `reload()` (the `.loading` phase drives its UI).
     private var loadInFlight = false
 
@@ -172,10 +193,47 @@ final class VaultModel: ObservableObject, Identifiable {
             DispatchQueue.main.async {
                 self.loadInFlight = false
                 self.logOutcome(outcome)
-                if case .openWindow = outcome.result { self.unlockError = nil }
-                self.phase = Self.phase(for: outcome.result, calendar: self.schedulePrefs.calendar)
+                self.applyLoadResult(outcome.result)
             }
         }
+    }
+
+    /// Re-enter this vault PREFERRING the in-RAM edits `stash` (set aside earlier this
+    /// window) over the on-disk contents. Runs the ordinary authoritative load; the
+    /// stash is honoured only if load() confirms the matching open window — see
+    /// `applyLoadResult` (fail-closed: a stash is never decrypted outside its window).
+    func reload(preferringStash stash: Data) {
+        pendingStash = stash
+        reload()
+    }
+
+    /// Map a `VaultStore.load()` result to the per-vault phase. When a re-entry stash is
+    /// pending AND load() confirms we are still inside the SAME open window, the password
+    /// prompt is fed the STASH payload (the newer in-RAM edits) instead of the on-disk
+    /// one; everything else maps exactly as `phase(for:)`. A stash that doesn't match an
+    /// open window is dropped here UNUSED — AppModel still holds the authoritative warm
+    /// copy and will seal it forward or retry, so nothing is lost. Internal (and not
+    /// async) so the substitution is unit-testable without a run loop.
+    func applyLoadResult(_ result: VaultLoadResult) {
+        let stash = pendingStash
+        pendingStash = nil
+        reenteredFromStash = false
+        if case .openWindow(let window, _) = result, let stash, stashWindow(stash) == window {
+            unlockError = nil
+            reenteredFromStash = true
+            phase = .unlockPrompt(window: window, payload: stash)   // prefer the newer in-RAM edits
+            return
+        }
+        if case .openWindow = result { unlockError = nil }
+        phase = Self.phase(for: result, calendar: schedulePrefs.calendar)
+    }
+
+    /// The committed window encoded in a set-aside payload's leading manifest, or nil if
+    /// the bytes carry no decodable one (in which case the stash is not trusted).
+    private func stashWindow(_ payload: Data) -> Manifest.Window? {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= Manifest.length else { return nil }
+        return try? Manifest.decode(Array(bytes[0..<Manifest.length]))
     }
 
     /// Record a load() outcome (and any hash-only quarantine records) to this
@@ -228,6 +286,10 @@ final class VaultModel: ObservableObject, Identifiable {
             unlockError = nil
             sealError = nil                 // a freshly opened editor shows no stale seal error
             phase = .unlocked(opened.session)
+            // Re-entered from an in-RAM stash: the live session now owns those edits, so
+            // AppModel drops its warm copy. `reenteredFromStash` STAYS set so leaving
+            // re-stashes them (still newer than disk until a forward seal).
+            if reenteredFromStash { onUnlockedFromStash?() }
         }
     }
 
@@ -270,16 +332,16 @@ final class VaultModel: ObservableObject, Identifiable {
         return false
     }
 
-    /// Whether the open editor holds changes not yet written to disk. Drives the
-    /// "unsaved changes" prompt on leaving and the graceful-quit warning. False unless
-    /// we are unlocked AND the live content differs from the baseline captured at
-    /// unlock — so a read-only open session (or any locked state) is never "dirty".
-    /// Model 1: leaving a clean vault just SETS IT DOWN (no seal) and it reopens in its
-    /// current window with the password; only unsaved edits force a discard-vs-save
-    /// choice, because saving means sealing forward (locked until the next window).
+    /// Whether the open editor holds edits not yet sealed to disk. Drives whether LEAVING
+    /// sets the vault ASIDE (re-locking the edits into an in-RAM stash) versus just
+    /// setting it down, and the graceful-quit warning. False unless we are unlocked AND
+    /// either the live content differs from the baseline captured at unlock, OR this
+    /// session was itself re-entered from a stash (its content is already newer than disk,
+    /// so leaving must re-stash even with no further change). Any locked/read-only state is
+    /// never "dirty".
     var isDirty: Bool {
         guard case .unlocked = phase, let baseline = loadedBaseline else { return false }
-        return content != baseline
+        return reenteredFromStash || content != baseline
     }
 
     /// Interactive re-seal that runs the (networked) seal OFF the main thread so the
@@ -329,6 +391,42 @@ final class VaultModel: ObservableObject, Identifiable {
         return true
     }
 
+    /// Re-lock the current (edited) content into a DETACHED in-RAM stash WITHOUT sealing
+    /// forward — the leave-with-edits path. Runs the ~1s key derivation off the main
+    /// thread (an honest "Setting aside…" overlay shows meanwhile), then delivers the
+    /// stash bytes to `completion` on main:
+    ///   • a payload ⇒ the caller (AppModel) holds it warm and may navigate away; the
+    ///     on-disk blob is untouched (still openable this window with the password), and
+    ///     the stash is sealed forward at window-end;
+    ///   • nil       ⇒ couldn't set aside (notes over the cap). `sealError` is set and the
+    ///     editor STAYS, so the edits are never silently dropped.
+    /// A no-op delivering nil when not unlocked or already setting aside.
+    func prepareSetAside(completion: @escaping (Data?) -> Void) {
+        guard case let .unlocked(session) = phase, !isSettingAside else { completion(nil); return }
+        sealError = nil
+        let notes: [UInt8]
+        do { notes = try content.encode() }
+        catch {
+            sealError = "These notes are too large to keep — trim them before leaving."
+            completion(nil); return
+        }
+        isSettingAside = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = session.makeSetAsidePayload(notes: notes)
+            DispatchQueue.main.async {
+                self.isSettingAside = false
+                switch result {
+                case .success(let payload):
+                    self.diagnosticsLog.record(.setAside, source: .app)
+                    completion(payload)
+                case .failure:
+                    self.sealError = "Couldn't set this vault aside. Your notes are unchanged on disk."
+                    completion(nil)
+                }
+            }
+        }
+    }
+
     /// Set the vault DOWN without sealing — the Model 1 leave path. Synchronously drops
     /// the in-RAM plaintext and stops the window-end monitor, leaving the on-disk blob
     /// UNTOUCHED (still openable in its current window; it reopens with the password).
@@ -342,6 +440,8 @@ final class VaultModel: ObservableObject, Identifiable {
         windowEndTimer = nil
         content = VaultContent()
         loadedBaseline = nil
+        reenteredFromStash = false
+        pendingStash = nil
     }
 
     // MARK: - Window-end monitor (forced re-lock while unlocked)

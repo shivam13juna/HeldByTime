@@ -150,4 +150,43 @@ struct VaultSession {
         return store.commit(pw01: pw01, window: decision.window, verifiedLatest: R)
             .map { decision.window }
     }
+
+    // MARK: - Set aside (detached in-RAM re-lock — no write, no network)
+
+    /// Re-encrypt `notes` into a DETACHED, password-locked "set-aside" payload —
+    /// the exact `manifest(openWindow) || PW01` shape a real open-window load
+    /// produces — WITHOUT writing anything or reaching the network. Like an
+    /// interactive re-seal it derives the key under a FRESH salt and seals under a
+    /// FRESH nonce (FORMAT.md §7 / DiD #3), so these bytes never share a key+nonce
+    /// with any other save; UNLIKE a re-seal it does NOT commit — the caller keeps
+    /// the bytes in RAM so a vault can be LEFT with unsaved edits without being
+    /// locked forward yet (it stays re-openable this window with the password).
+    ///
+    /// Because the shape is byte-identical to a load payload, both consumers reuse
+    /// audited code verbatim, and neither needs a fresh password derivation at its
+    /// own time:
+    ///   • re-entry feeds it back through `VaultSession.open(...)` — the user
+    ///     re-types the password and decrypts THESE newer edits instead of disk;
+    ///   • a window-end forward-seal feeds it through `VaultStore.defensiveReseal`
+    ///     — passwordless, the PW01 bytes reused verbatim, only the committed
+    ///     window moving forward (I8 anti-shortening stays intact).
+    ///
+    /// RAM-only by design: a password-openable blob written to disk mid-window would
+    /// be exactly the escape hatch §9 / I13 forbid, so it is never persisted; it is
+    /// lost if RAM is lost (the accepted trade). Fail-closed: over-cap notes (or any
+    /// encode failure) throw and yield NO payload.
+    func makeSetAsidePayload(notes: [UInt8]) -> Result<Data, StoreError> {
+        let salt = SecureRandom.bytes(VaultConstants.ARGON2_SALT_LEN)
+        let nonce = SecureRandom.bytes(VaultConstants.GCM_NONCE_LEN)
+        do {
+            let manifest = try Manifest.encode(openWindow)
+            let key = try KeyDerivation.deriveKey(password: password, salt: salt)
+            let pw01 = try PW01.seal(notes: notes, key: key, salt: salt, nonce: nonce)
+            return .success(Data(manifest + pw01))
+        } catch let e as VaultFormatError {
+            return .failure(.format(e))
+        } catch {
+            return .failure(.format(.invariantViolation("\(error)")))
+        }
+    }
 }

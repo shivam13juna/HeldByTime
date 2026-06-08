@@ -33,6 +33,12 @@ struct AppConfiguration {
     /// Where this vault's SECRET-FREE diagnostics trail lives (app + agent append;
     /// DiagnosticsView reads it). Non-secret by construction — see DiagnosticLog.
     var diagnosticsLogURL: URL { vaultDir.appendingPathComponent("diagnostics.log") }
+    /// This vault's two on-disk copies (primary + `.bak`), mirroring
+    /// `VaultStore.primaryURL` / `backupURL`. Used by the list advisory to peek the
+    /// plaintext VLT1 window — read-only DISPLAY hints; the authoritative read is
+    /// always VaultStore over `vaultDir`.
+    var vaultPrimaryURL: URL { vaultDir.appendingPathComponent(VaultRegistry.vaultFileName) }
+    var vaultBackupURL: URL { vaultDir.appendingPathComponent(VaultRegistry.vaultFileName + ".bak") }
 }
 
 /// APP-GLOBAL locations shared across all vaults: the vaults root (parent of every

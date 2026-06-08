@@ -45,6 +45,7 @@ struct VaultListView: View {
                             VaultRow(entry: entry,
                                      nextOpening: model.advisoryOpenings[entry.id],
                                      isOpenNow: model.advisoryOpenNow.contains(entry.id),
+                                     hasMemoryEdits: model.warmEdits[entry.id] != nil,
                                      isSelecting: isSelecting,
                                      isSelected: selected.contains(entry.id),
                                      onToggleSelect: { toggleSelect(entry) },
@@ -385,6 +386,11 @@ struct VaultRow: View {
     /// Advisory: the schedule places NOW inside a window, so the row reads "Open now".
     /// DISPLAY ONLY — never the authoritative lock state (opening runs the real gate).
     let isOpenNow: Bool
+    /// True when this vault was left this window with unsaved edits, re-locked into an
+    /// in-RAM stash (AppModel.warmEdits). Drives a "kept in memory" badge so the
+    /// volatility is visible — those edits seal at window-end and are lost if the app
+    /// exits first.
+    let hasMemoryEdits: Bool
     /// Selection mode (export picker): show a checkbox in place of the lock glyph and
     /// turn the whole row into a toggle; the per-vault action buttons are hidden.
     let isSelecting: Bool
@@ -414,6 +420,7 @@ struct VaultRow: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 advisory
+                if hasMemoryEdits { memoryEditsBadge }
             }
 
             if !isSelecting {
@@ -468,6 +475,15 @@ struct VaultRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { if isSelecting { onToggleSelect() } }
+    }
+
+    /// Shown when the vault has unsaved edits set aside in memory this window — a quiet
+    /// orange note that those edits are volatile until the window-end seal (and that
+    /// re-opening resumes them with the password).
+    private var memoryEditsBadge: some View {
+        Label("Unsaved edits kept in memory", systemImage: "pencil.and.outline")
+            .font(.caption)
+            .foregroundStyle(.orange)
     }
 
     @ViewBuilder private var advisory: some View {

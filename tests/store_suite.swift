@@ -372,4 +372,31 @@ private func loadRecoveryTests() {
         let v = try? dir.resourceValues(forKeys: [.isExcludedFromBackupKey])
         stk("load/ensure-dir-excluded", !threw && v?.isExcludedFromBackup == true)
     }
+
+    // ---- VaultAdvisor: the DISPLAY-ONLY list advisory (mirrors decide() for display).
+    // The key case is a vault sealed FORWARD: it must read CLOSED even while a recurring
+    // schedule still places "now" inside a window (the "Lock now"-inside-the-window bug).
+    do {
+        let cur: UInt64 = 1_000_000
+        func adv(_ copies: [(start: UInt64, end: UInt64)]) -> VaultAdvisory {
+            VaultAdvisor.advise(copies: copies, current: cur, schedule: schedule, now: now)
+        }
+        stk("advisor/open-now", adv([(cur - 10, cur + 10)]).isOpenNow)
+        stk("advisor/open-at-start-inclusive", adv([(cur, cur + 10)]).isOpenNow)
+        stk("advisor/open-at-end-inclusive", adv([(cur - 10, cur)]).isOpenNow)
+        stk("advisor/forward-sealed-closed", !adv([(cur + 100, cur + 200)]).isOpenNow,
+            "sealed to the future ⇒ NOT open now (the Lock-now-in-window bug)")
+        stk("advisor/forward-sealed-next-opening",
+            adv([(cur + 100, cur + 200)]).nextOpening == TrustedTime.date(forRound: cur + 100),
+            "closed-forward ⇒ next opening = committed start round")
+        stk("advisor/future-vetoes-open",
+            !adv([(cur - 10, cur + 10), (cur + 100, cur + 200)]).isOpenNow,
+            "a future copy vetoes an open sibling (anti-shortening I8)")
+        stk("advisor/expired-closed", !adv([(cur - 200, cur - 100)]).isOpenNow)
+        stk("advisor/expired-uses-schedule-forecast",
+            adv([(cur - 200, cur - 100)]).nextOpening == schedule.nextWindowOpening(after: now),
+            "expired ⇒ schedule forecast (load will re-seal it forward)")
+        stk("advisor/no-readable-copies-closed", !adv([]).isOpenNow,
+            "unreadable/corrupt vault ⇒ closed (not openable)")
+    }
 }
